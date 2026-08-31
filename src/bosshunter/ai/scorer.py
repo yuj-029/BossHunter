@@ -492,8 +492,7 @@ def score_jobs(
     try:
         resume = _load_resume(config)
         if not resume:
-            console.print("[red]无法读取简历文件[/red]")
-            return 0, 0
+            raise RuntimeError("基础简历为空或无法读取，请检查 profile.resume_path")
 
         if rescore_filtered:
             reset_count = reset_ai_filtered_jobs(db)
@@ -599,7 +598,11 @@ def score_jobs(
                         interrupted = True
                         break
                     except Exception as exc:
-                        outcome = ScoreOutcome(failure_detail=f"评分任务异常: {type(exc).__name__}")
+                        safe_detail = str(exc).strip()[:160]
+                        pause_reason = f"评分系统异常: {type(exc).__name__}"
+                        if safe_detail:
+                            pause_reason = f"{pause_reason}: {safe_detail}"
+                        outcome = ScoreOutcome(pause_reason=pause_reason)
 
                     result = outcome.result
                     completed_job = False

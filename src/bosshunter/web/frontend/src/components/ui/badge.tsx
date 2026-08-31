@@ -7,12 +7,12 @@ const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: 'bg-zinc-600/20 text-zinc-300 border-zinc-600/30',
-        pending: 'bg-zinc-600/20 text-zinc-500 border-zinc-600/30',
+        default: 'border-card-border bg-surface-subtle text-muted',
+        pending: 'border-card-border bg-surface-subtle text-muted',
         scored: 'bg-blue-600/10 text-blue-600 border-blue-600/20',
         ready: 'bg-cyan-600/10 text-cyan-700 border-cyan-600/20',
         approved: 'bg-amber-600/10 text-amber-700 border-amber-600/20',
-        skipped: 'bg-zinc-600/10 text-zinc-500 border-zinc-600/20',
+        skipped: 'border-card-border bg-surface-subtle text-muted',
         sent: 'bg-green-600/10 text-green-700 border-green-600/20',
         replied: 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20',
         resume_sent: 'bg-purple-600/10 text-purple-700 border-purple-600/20',
@@ -22,7 +22,7 @@ const badgeVariants = cva(
         auto_replied: 'bg-emerald-600/10 text-emerald-700 border-emerald-600/20',
         rejected: 'bg-red-600/10 text-red-700 border-red-600/20',
         error: 'bg-red-600/10 text-red-700 border-red-600/20',
-        filtered: 'bg-zinc-700/10 text-zinc-500 border-zinc-700/20',
+        filtered: 'border-card-border bg-surface-subtle text-muted',
       },
     },
     defaultVariants: {

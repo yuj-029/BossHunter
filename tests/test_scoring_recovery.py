@@ -118,6 +118,47 @@ def test_pause_checkpoint_keeps_current_and_unstarted_jobs_for_recovery(tmp_path
 	assert set(checkpoints[-1]["remaining_job_ids"]).issubset({"one", "two", "three"})
 
 
+def test_unexpected_worker_exception_pauses_batch_and_preserves_all_jobs(tmp_path):
+	db_path = tmp_path / "worker-error.db"
+	db = get_db(db_path)
+	try:
+		for job_id in ("one", "two", "three"):
+			insert_job(db, _job(job_id))
+	finally:
+		db.close()
+
+	checkpoints: list[dict] = []
+	with (
+		patch("bosshunter.ai.scorer.get_db", side_effect=lambda: get_db(db_path)),
+		patch("bosshunter.ai.scorer._load_resume", return_value="real resume"),
+		patch("bosshunter.ai.scorer.quick_score", return_value=(80, "pass")),
+		patch("bosshunter.ai.scorer._score_job_with_ai", side_effect=TypeError("bad proxy")),
+	):
+		score_jobs(
+			{
+				"ai": {"scoring_concurrency": 1},
+				"scoring": {"threshold": 60},
+				"_workbench_score_checkpoint": checkpoints.append,
+			}
+		)
+
+	assert checkpoints[-1]["status"] == "paused"
+	assert "TypeError" in checkpoints[-1]["pause_reason"]
+	assert set(checkpoints[-1]["remaining_job_ids"]) == {"one", "two", "three"}
+
+
+def test_empty_resume_fails_instead_of_leaving_run_active(tmp_path):
+	db_path = tmp_path / "empty-resume.db"
+	get_db(db_path).close()
+
+	with (
+		patch("bosshunter.ai.scorer.get_db", side_effect=lambda: get_db(db_path)),
+		patch("bosshunter.ai.scorer._load_resume", return_value=""),
+		pytest.raises(RuntimeError, match="基础简历为空"),
+	):
+		score_jobs({})
+
+
 def test_restart_preserves_remaining_jobs_and_marks_run_recoverable(tmp_path):
 	db_path = tmp_path / "restart.db"
 	get_db(db_path).close()

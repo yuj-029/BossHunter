@@ -371,6 +371,7 @@ class AnthropicCredentialTests(unittest.TestCase):
 
         self.assertEqual(result, "ok")
         self.assertEqual(post.call_args.args[0], "https://api.deepseek.com/chat/completions")
+        self.assertFalse(post.call_args.kwargs["trust_env"])
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer deepseek-secret")
         self.assertEqual(post.call_args.kwargs["json"]["model"], "provider-current-model")
 
@@ -422,6 +423,32 @@ class AnthropicCredentialTests(unittest.TestCase):
             credentials.call_openai_compatible_text("prompt", config, 8)
 
         self.assertEqual(post.call_args.kwargs["json"]["model"], "Vendor/CaseSensitive-Model")
+
+    def test_custom_compatible_accepts_complete_chat_completions_url(self):
+        class CompletionResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"choices": [{"message": {"content": "ok"}}]}
+
+        config = {
+            "ai": {
+                "service": "custom",
+                "provider": "openai_compatible",
+                "base_url": "https://compatible.example/v1/chat/completions",
+                "api_key": "local-test-secret",
+                "model": "vendor-model",
+            }
+        }
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("bosshunter.ai.credentials.httpx.post", return_value=CompletionResponse()) as post,
+        ):
+            result = credentials.call_openai_compatible_text("prompt", config, 8)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(post.call_args.args[0], "https://compatible.example/v1/chat/completions")
 
     def test_openai_compatible_accepts_array_content(self):
         class CompletionResponse:

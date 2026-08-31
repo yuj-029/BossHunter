@@ -509,7 +509,8 @@ def generate_tailored_resume(job_id: str, config: dict) -> Path | None:
     global _last_resume_api_error
     _resume_failure_reasons.pop(str(job_id), None)
     _last_resume_api_error = ""
-    db = get_db()
+    db_path = config.get("_db_path") if isinstance(config, dict) else None
+    db = get_db(Path(str(db_path)) if db_path else None)
 
     def fail(reason: str) -> None:
         _set_resume_failure_reason(job_id, reason)

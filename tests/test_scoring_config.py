@@ -30,6 +30,27 @@ class ScoringConfigTests(unittest.TestCase):
         self.assertEqual(config["scoring"]["threshold"], 71)
         self.assertEqual(config["monitor"]["interval"], 30)
 
+    def test_scoring_threshold_rejects_zero_and_accepts_range_edges(self):
+        for value in (0, 101, True, 1.5):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "config.yaml"
+                path.write_text(f"scoring:\n  threshold: {str(value).lower()}\n", encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "评分门槛"):
+                    load_config(path)
+        for value in (1, 100):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "config.yaml"
+                path.write_text(f"scoring:\n  threshold: {value}\n", encoding="utf-8")
+                self.assertEqual(load_config(path)["scoring"]["threshold"], value)
+
+    def test_legacy_day_off_probability_is_discarded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "config.yaml"
+            path.write_text("throttle:\n  day_off_probability: 1\n", encoding="utf-8")
+            config = load_config(path)
+
+        self.assertNotIn("day_off_probability", config["throttle"])
+
 
 if __name__ == "__main__":
     unittest.main()

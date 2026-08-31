@@ -1,7 +1,8 @@
 import { Fragment, useEffect, useState } from 'react'
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
-import { CheckCircle2, ChevronDown, ChevronUp, ExternalLink, Trash2 } from 'lucide-react'
+import { Input } from '@/components/ui/input'
+import { CheckCircle2, ChevronDown, ChevronUp, Download, ExternalLink, MessageCircle, Sparkles, Trash2 } from 'lucide-react'
 import { getStatusLabel } from '@/lib/status'
 import type { Job } from '@/hooks/useDashboard'
 import type { JobSortKey, JobSortOrder } from '@/hooks/useJobSearch'
@@ -16,22 +17,33 @@ interface JobsTableProps {
   onToggleSelected: (id: string) => void
   onSoftDelete?: (job: Job) => void
   onMarkManuallySent?: (job: Job) => void
+  onDownloadResume?: (job: Job) => void
+  onTailorResume?: (job: Job) => void
+  onCustomGreeting?: (job: Job) => void
   loading?: boolean
   sortBy: JobSortKey
   sortOrder: JobSortOrder
   onSortChange: (sortBy: JobSortKey) => void
 }
 
-function safeExternalJobUrl(job: Job): string | null {
-  if (job.source_platform !== 'zhilian' && job.source_platform !== '51job') return null
+function safePlatformJobUrl(job: Job): string | null {
+  const platform = job.source_platform || 'boss'
+  const rootDomains: Record<string, string> = {
+    boss: 'zhipin.com',
+    zhilian: 'zhaopin.com',
+    '51job': '51job.com',
+  }
+  const rootDomain = rootDomains[platform]
+  if (!rootDomain) return null
+  const fallbackUrl = platform === 'boss' ? 'https://www.zhipin.com/' : null
+  if (!job.url?.trim()) return fallbackUrl
   try {
     const parsed = new URL(job.url || '')
-    if (parsed.protocol !== 'https:') return null
-    const rootDomain = job.source_platform === 'zhilian' ? 'zhaopin.com' : '51job.com'
-    if (parsed.hostname !== rootDomain && !parsed.hostname.endsWith(`.${rootDomain}`)) return null
+    if (parsed.protocol !== 'https:') return fallbackUrl
+    if (parsed.hostname !== rootDomain && !parsed.hostname.endsWith(`.${rootDomain}`)) return fallbackUrl
     return parsed.toString()
   } catch {
-    return null
+    return fallbackUrl
   }
 }
 
@@ -54,11 +66,11 @@ function statusVariant(status: string) {
   return variants.has(status) ? status : 'default'
 }
 
-export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
+export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedIds, onToggleSelected, onSoftDelete, onMarkManuallySent, onDownloadResume, onTailorResume, onCustomGreeting, loading = false, sortBy, sortOrder, onSortChange }: JobsTableProps) {
   const [expanded, setExpanded] = useState<string | null>(null)
   const [pageInput, setPageInput] = useState(String(page + 1))
   const totalPages = Math.ceil(total / pageSize)
-  const hasActions = Boolean(onSoftDelete || onMarkManuallySent)
+  const hasActions = Boolean(onSoftDelete || onMarkManuallySent || onDownloadResume || onTailorResume || onCustomGreeting)
 
   useEffect(() => {
     setPageInput(String(page + 1))
@@ -105,16 +117,17 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
   )
 
   return (
-    <Card>
+    <Card className="relative overflow-hidden" aria-busy={loading}>
+      {loading && <div className="absolute inset-x-0 top-0 z-10 h-1 animate-pulse bg-primary" />}
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>岗位列表</CardTitle>
         <span className="text-xs text-muted">{total} 条记录</span>
       </CardHeader>
       <CardContent className="p-0">
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="w-full min-w-[1180px] text-sm">
             <thead>
-              <tr className="border-b border-card-border bg-[#FFF0E5] text-xs text-muted">
+              <tr className="border-b border-card-border bg-surface-accent text-xs text-muted">
                 <th className="w-10 px-3 py-3 text-center font-bold">选</th>
                 <th className="px-4 py-3 text-left font-bold">公司</th>
                 <th className="px-4 py-3 text-left font-bold">职位</th>
@@ -125,19 +138,19 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                 <th className="px-4 py-3 text-left">{sortableHeader('状态', 'status')}</th>
                 <th className="px-4 py-3 text-left">{sortableHeader('招聘者活跃', 'hr_active')}</th>
                 <th className="px-4 py-3 text-left">{sortableHeader('时间', 'created_at')}</th>
-                {hasActions && <th className="min-w-[210px] px-3 py-3 text-center font-bold">操作</th>}
+                {hasActions && <th className="min-w-[280px] px-3 py-3 text-center font-bold">操作</th>}
               </tr>
             </thead>
             <tbody>
               {jobs.map(job => {
                 const isExpanded = expanded === job.id
                 const isExternalPlatform = job.source_platform === 'zhilian' || job.source_platform === '51job'
-                const externalUrl = safeExternalJobUrl(job)
+                const platformUrl = safePlatformJobUrl(job)
                 const alreadySent = ['sent', 'replied', 'resume_sent', 'needs_resume', 'follow_up_sent'].includes(job.status)
                 return (
                   <Fragment key={job.id}>
                     <tr
-                      className="cursor-pointer border-b border-card-border bg-white transition-colors hover:bg-[#FFFCFA]"
+                      className="cursor-pointer border-b border-card-border bg-white transition-colors hover:bg-surface-subtle"
                       onClick={() => setExpanded(isExpanded ? null : job.id)}
                     >
                       <td className="px-3 py-3 text-center" onClick={event => event.stopPropagation()}>
@@ -152,11 +165,11 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <span className="max-w-[160px] truncate font-black text-foreground">{job.company}</span>
-                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${job.source_platform === 'boss' || !job.source_platform ? 'bg-[#FFF0E5] text-primary' : 'bg-blue-50 text-blue-700'}`}>
+                          <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${job.source_platform === 'boss' || !job.source_platform ? 'bg-surface-accent text-primary' : 'bg-blue-50 text-blue-700'}`}>
                             {job.source_platform === 'zhilian' ? '智联' : job.source_platform === '51job' ? '51job' : 'BOSS'}
                           </span>
                           {job.company_size && (
-                            <span className="rounded-full bg-[#FFFCFA] px-2 py-0.5 text-[10px] font-bold text-muted">{job.company_size}</span>
+                            <span className="rounded-full bg-surface-subtle px-2 py-0.5 text-[10px] font-bold text-muted">{job.company_size}</span>
                           )}
                         </div>
                       </td>
@@ -183,26 +196,53 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                       {hasActions && (
                         <td className="px-3 py-3" onClick={event => event.stopPropagation()}>
                           <div className="flex flex-wrap items-center justify-center gap-1.5">
-                            {isExternalPlatform && externalUrl && (
-                              <a href={externalUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-lg border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-[#FFF0E5]">
+                            {platformUrl && (
+                              <a href={platformUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-xl border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-surface-accent">
                                 <ExternalLink className="h-3.5 w-3.5" />打开平台
                               </a>
                             )}
-                            {isExternalPlatform && !externalUrl && (
+                            {!platformUrl && (
                               <span className="rounded-lg bg-amber-50 px-2 py-1.5 text-[11px] font-bold text-amber-700">链接不可用</span>
+                            )}
+                            {onTailorResume && (
+                              <button
+                                type="button"
+                                onClick={() => onTailorResume(job)}
+                                className="inline-flex items-center gap-1 rounded-xl border border-primary/30 bg-surface-accent px-2 py-1.5 text-[11px] font-black text-primary hover:border-primary hover:bg-primary hover:text-white"
+                              >
+                                <Sparkles className="h-3.5 w-3.5" />{job.resume_path ? '重新定制' : 'AI定制简历'}
+                              </button>
+                            )}
+                            {onCustomGreeting && (
+                              <button
+                                type="button"
+                                onClick={() => onCustomGreeting(job)}
+                                className="inline-flex items-center gap-1 rounded-xl bg-primary px-2 py-1.5 text-[11px] font-black text-white hover:bg-primary/90"
+                              >
+                                <MessageCircle className="h-3.5 w-3.5" />{job.greeting ? '查看招呼语' : 'AI定制招呼语'}
+                              </button>
+                            )}
+                            {job.resume_path && onDownloadResume && (
+                              <button
+                                type="button"
+                                onClick={() => onDownloadResume(job)}
+                                className="inline-flex items-center gap-1 rounded-xl border border-card-border px-2 py-1.5 text-[11px] font-bold text-primary hover:bg-surface-accent"
+                              >
+                                <Download className="h-3.5 w-3.5" />下载定制简历
+                              </button>
                             )}
                             {isExternalPlatform && onMarkManuallySent && (
                               <button
                                 type="button"
                                 disabled={alreadySent}
                                 onClick={() => onMarkManuallySent(job)}
-                                className="inline-flex items-center gap-1 rounded-lg bg-primary px-2 py-1.5 text-[11px] font-bold text-white hover:opacity-90 disabled:bg-emerald-50 disabled:text-emerald-700 disabled:opacity-100"
+                                className="inline-flex items-center gap-1 rounded-xl bg-primary px-2 py-1.5 text-[11px] font-bold text-white hover:opacity-90 disabled:bg-emerald-50 disabled:text-emerald-700 disabled:opacity-100"
                               >
                                 <CheckCircle2 className="h-3.5 w-3.5" />{alreadySent ? '已发送' : '我已发送'}
                               </button>
                             )}
                             {onSoftDelete && (
-                              <button type="button" onClick={() => onSoftDelete(job)} className="rounded-lg p-2 text-muted hover:bg-red-50 hover:text-danger" aria-label={`将 ${job.company} ${job.title} 移入回收站`}>
+                              <button type="button" onClick={() => onSoftDelete(job)} className="rounded-xl p-2 text-muted hover:bg-red-50 hover:text-danger" aria-label={`将 ${job.company} ${job.title} 移入回收站`}>
                                 <Trash2 className="h-4 w-4" />
                               </button>
                             )}
@@ -211,7 +251,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                       )}
                     </tr>
                     {isExpanded && (
-                      <tr className="border-b border-card-border bg-[#FFFCFA]">
+                      <tr className="border-b border-card-border bg-surface-subtle">
                         <td colSpan={hasActions ? 11 : 10} className="px-6 py-4">
                           <div className="grid grid-cols-1 gap-4 text-sm lg:grid-cols-3">
                             <div className="rounded-2xl border border-card-border bg-white p-4">
@@ -262,7 +302,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
             </button>
             <label className="flex items-center gap-1 text-muted">
               第
-              <input
+              <Input
                 type="number"
                 min={1}
                 max={Math.max(1, totalPages)}
@@ -271,7 +311,7 @@ export function JobsTable({ jobs, page, pageSize, total, onPageChange, selectedI
                 onKeyDown={event => { if (event.key === 'Enter') jumpToPage() }}
                 onBlur={jumpToPage}
                 aria-label="跳转页码"
-                className="w-14 rounded-md border border-card-border bg-[#FFFCFA] px-2 py-1 text-center text-foreground outline-none focus:border-primary"
+                className="h-7 w-14 bg-surface-subtle px-2 py-1 text-center"
               />
               页 / {totalPages} 页
             </label>

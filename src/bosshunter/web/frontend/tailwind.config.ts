@@ -16,6 +16,8 @@ export default {
         warning: '#F59E0B',
         danger: '#E5483D',
         muted: '#7A6C61',
+        'surface-subtle': '#FFFCFA',
+        'surface-accent': '#FFF0E5',
       },
     },
   },

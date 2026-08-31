@@ -62,6 +62,24 @@ class _FakeCollector:
 
 
 class CollectionOrchestratorTests(TestCase):
+    def test_51job_max_pages_range_is_one_to_fifty(self):
+        def options(max_pages):
+            return {
+                "platform_order": ["51job"],
+                "platforms": {"51job": {
+                    "keywords": ["AI 产品"],
+                    "cities": ["上海"],
+                    "max_pages": max_pages,
+                }},
+            }
+
+        for max_pages in (1, 50):
+            normalized = normalize_collection_options({}, options(max_pages))
+            self.assertEqual(normalized["platforms"]["51job"]["max_pages"], max_pages)
+        for max_pages in (0, 51):
+            with self.assertRaisesRegex(ValueError, "51job 最大页数范围为 1-50"):
+                normalize_collection_options({}, options(max_pages))
+
     def test_two_platforms_are_strictly_serial_and_save_only_new_rows(self):
         events = []
         boss_candidates = [

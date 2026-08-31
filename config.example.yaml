@@ -83,7 +83,6 @@ throttle:
   browse_duration_max: 30
   send_windows:
     - "09:00-17:00"
-  day_off_probability: 0.05
 
 ai:
   provider: "anthropic"

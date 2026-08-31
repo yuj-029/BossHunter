@@ -195,7 +195,7 @@ def confirm(ctx: click.Context) -> None:
 
 
 @cli.command()
-@click.option("--force", is_flag=True, help="跳过随机休息日检查")
+@click.option("--force", is_flag=True, help="跳过发送时间窗口检查")
 @click.pass_context
 def send(ctx: click.Context, force: bool) -> None:
     """自动发送已生成的招呼语"""

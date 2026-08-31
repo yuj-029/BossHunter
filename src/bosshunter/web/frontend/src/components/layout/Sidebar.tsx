@@ -1,21 +1,17 @@
 import { NavLink } from 'react-router-dom'
-import { BriefcaseBusiness, Github, LayoutDashboard, Radar, Settings } from 'lucide-react'
+import { Github, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
-
-const navItems = [
-  { to: '/', icon: LayoutDashboard, label: '工作台' },
-  { to: '/jobs', icon: BriefcaseBusiness, label: '岗位池' },
-  { to: '/monitor', icon: Radar, label: '监测执行' },
-  { to: '/config', icon: Settings, label: '配置' },
-]
+import { NAV_ITEMS } from './navigation'
 
 const GITHUB_URL = 'https://github.com/powerycy/BossHunter'
 
 interface SidebarProps {
   pendingReplies?: number
+  mobileOpen?: boolean
+  onNavigate?: () => void
 }
 
-export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
+export function Sidebar({ pendingReplies: pendingRepliesProp, mobileOpen = false, onNavigate }: SidebarProps) {
   const [pendingReplies, setPendingReplies] = useState(pendingRepliesProp ?? 0)
 
   useEffect(() => {
@@ -40,29 +36,34 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
   }, [pendingRepliesProp])
 
   return (
-    <aside className="w-60 border-r border-card-border bg-white flex flex-col">
+    <aside className={`fixed inset-y-0 left-0 z-50 flex w-60 shrink-0 flex-col border-r border-card-border bg-white transition-transform lg:static lg:translate-x-0 ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}>
       <div className="h-16 flex items-center px-5 border-b border-card-border">
-        <div className="flex items-center gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-primary text-white flex items-center justify-center shadow-lg shadow-primary/20">
             <span className="font-black text-sm">BH</span>
           </div>
           <div>
             <div className="font-black text-sm tracking-tight text-foreground">BossHunter</div>
-            <div className="text-[11px] text-muted">v2.3.1 · 本地控制台</div>
+            <div className="text-[11px] text-muted">v2.3.2 · 本地控制台</div>
           </div>
         </div>
+        <button type="button" className="ml-2 rounded-lg p-2 text-muted hover:bg-surface-accent hover:text-primary lg:hidden" onClick={onNavigate} aria-label="关闭导航">
+          <X className="h-4 w-4" />
+        </button>
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-1">
-        {navItems.map(item => (
+        {NAV_ITEMS.map(item => (
           <NavLink
             key={item.to}
             to={item.to}
+            end={item.to === '/'}
+            onClick={onNavigate}
             className={({ isActive }) =>
               `flex items-center justify-between gap-3 px-3 py-3 rounded-xl text-sm transition-colors ${
                 isActive
-                  ? 'bg-[#FFF0E5] text-primary font-black'
-                  : 'text-muted hover:text-foreground hover:bg-[#FFFCFA]'
+                  ? 'bg-surface-accent text-primary font-black'
+                  : 'text-muted hover:text-foreground hover:bg-surface-subtle'
               }`
             }
           >
@@ -82,7 +83,7 @@ export function Sidebar({ pendingReplies: pendingRepliesProp }: SidebarProps) {
           href={GITHUB_URL}
           target="_blank"
           rel="noreferrer"
-          className="relative flex items-center rounded-2xl border border-card-border bg-[#FFFCFA] px-3 py-3 text-xs font-black text-foreground transition-colors hover:border-primary/60 hover:text-primary"
+          className="relative flex items-center rounded-2xl border border-card-border bg-surface-subtle px-3 py-3 text-xs font-black text-foreground transition-colors hover:border-primary/60 hover:text-primary"
         >
           <Github className="absolute left-3 h-4 w-4" />
           <span className="mx-auto flex items-center justify-center gap-2">

@@ -23,7 +23,7 @@ from bosshunter.db import (
     set_platform_safety_lock,
 )
 from bosshunter.collection.capabilities import platform_supports
-from bosshunter.throttle import RequestThrottle, SendWindowChecker, ProgressiveBackoff, should_take_day_off
+from bosshunter.throttle import RequestThrottle, SendWindowChecker, ProgressiveBackoff
 from bosshunter.platform_safety import PlatformAccessGuard, PlatformSafetyStop
 
 console = Console()
@@ -979,6 +979,9 @@ def _send_greeting_once(job: dict, greeting: str, throttle_config: dict) -> tupl
 
 def send_greetings(config: dict, force: bool = False) -> int:
     """Send generated greetings. Returns count of successfully sent."""
+    if config.get("delivery", {}).get("automated_greeting_enabled", True) is False:
+        console.print("[yellow]自动打招呼已取消，不发送消息。[/yellow]")
+        return 0
     db = get_db()
     throttle_config = dict(config.get("throttle", {}))
     stop_event = config.get("_workbench_stop_event")
@@ -1009,15 +1012,6 @@ def send_greetings(config: dict, force: bool = False) -> int:
     except PlatformSafetyStop as exc:
         send_report["stop_reason"] = exc.reason
         console.print("[yellow]为了账户安全，平台风险冷却尚未结束，已停止投递[/yellow]")
-        db.close()
-        return 0
-
-    # Anti-ban: random day off (可通过 --force 跳过)
-    day_off_prob = throttle_config.get("day_off_probability", 0.05)
-    if not force and should_take_day_off(day_off_prob):
-        console.print("[yellow]🎲 今日随机休息（防检测），跳过发送[/yellow]")
-        add_risk_event(db, "day_off", "随机休息日")
-        send_report["stop_reason"] = "day_off"
         db.close()
         return 0
 
@@ -1061,7 +1055,7 @@ def send_greetings(config: dict, force: bool = False) -> int:
 
     # Count today's sent
     today_sent = db.execute(
-        "SELECT COUNT(*) as cnt FROM history WHERE action='sent' AND date(created_at)=date('now')"
+        "SELECT COUNT(*) as cnt FROM history WHERE action='sent' AND date(created_at, '+8 hours')=date('now', '+8 hours')"
     ).fetchone()
     already_sent = today_sent["cnt"] if today_sent else 0
 

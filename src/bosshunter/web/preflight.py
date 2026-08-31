@@ -11,6 +11,8 @@ from typing import Any
 import httpx
 
 from bosshunter.ai.credentials import (
+	AIRequestError,
+	call_anthropic_text,
 	get_ai_api_key,
 	get_ai_base_url,
 	get_ai_key_source,
@@ -101,7 +103,7 @@ def collect_preflight_checks(mode: str, config: dict, options: dict | None = Non
 
 
 def check_ai_connection(config: dict, required: bool = True) -> list[dict[str, str]]:
-	"""Validate AI credentials and perform a no-token model-list request."""
+	"""Validate AI credentials and confirm the configured message endpoint works."""
 	ai_cfg = config.get("ai", {}) if isinstance(config.get("ai"), dict) else {}
 	severity = "error" if required else "warning"
 	provider = str(ai_cfg.get("provider") or "anthropic")
@@ -164,7 +166,13 @@ def check_ai_connection(config: dict, required: bool = True) -> list[dict[str, s
 		headers["anthropic-version"] = "2023-06-01"
 
 	try:
-		result = httpx.get(models_url, headers=headers, timeout=8, follow_redirects=True)
+		result = httpx.get(
+			models_url,
+			headers=headers,
+			timeout=8,
+			follow_redirects=True,
+			trust_env=False,
+		)
 	except httpx.TimeoutException:
 		return [
 			_check(
@@ -199,17 +207,6 @@ def check_ai_connection(config: dict, required: bool = True) -> list[dict[str, s
 				"config",
 			)
 		]
-	if result.status_code in {404, 405}:
-		return [
-			_check(
-				"ai_connection",
-				"AI 接口连接",
-				"warning",
-				"接口可访问，但无法自动验证模型",
-				"该兼容服务未提供模型列表接口；BossHunter 启动时仍会尝试消息接口。",
-				"config",
-			)
-		]
 	if result.status_code == 429:
 		return [
 			_check(
@@ -222,13 +219,67 @@ def check_ai_connection(config: dict, required: bool = True) -> list[dict[str, s
 			)
 		]
 	if result.status_code >= 400:
+		if result.status_code not in {404, 405}:
+			return [
+				_check(
+					"ai_connection",
+					"AI 接口连接",
+					severity,
+					f"AI 接口返回异常状态 {result.status_code}",
+					"请检查 Base URL、API Key 和服务商状态。",
+					"config",
+				)
+			]
+
+	reply = None
+	probe_error: AIRequestError | None = None
+	for _ in range(2):
+		try:
+			reply = call_anthropic_text(
+				"只回复 OK",
+				config,
+				8,
+				timeout=15,
+				purpose="diagnostics",
+			)
+			probe_error = None
+			break
+		except AIRequestError as exc:
+			probe_error = exc
+			if exc.kind not in {"network", "timeout", "request_failed"}:
+				break
+		except Exception:
+			return [
+				_check(
+					"ai_connection",
+					"AI 接口连接",
+					severity,
+					"真实消息接口验证失败",
+					"请检查 Base URL、网络代理和模型配置后重试。",
+					"config",
+				)
+			]
+	if probe_error is not None:
+		exc = probe_error
+		message = "API Key 验证失败" if exc.kind == "auth" else exc.user_message
 		return [
 			_check(
 				"ai_connection",
 				"AI 接口连接",
 				severity,
-				f"AI 接口返回异常状态 {result.status_code}",
-				"请检查 Base URL、API Key 和服务商状态。",
+				message,
+				"真实消息请求失败，请检查 Base URL、API Key、模型权限或服务额度。",
+				"config",
+			)
+		]
+	if not str(reply or "").strip():
+		return [
+			_check(
+				"ai_connection",
+				"AI 接口连接",
+				severity,
+				"AI 接口没有返回内容",
+				"凭证可访问服务，但当前模型未返回有效文本，请检查模型名称。",
 				"config",
 			)
 		]
@@ -239,7 +290,7 @@ def check_ai_connection(config: dict, required: bool = True) -> list[dict[str, s
 			"AI 接口连接",
 			"pass",
 			"AI 接口连接正常",
-			f"已验证凭证和服务地址，当前模型：{model}；Key 来源：{key_source or '未知'}。",
+			f"已通过真实消息接口验证，当前模型：{model}；Key 来源：{key_source or '未知'}。",
 		)
 	]
 

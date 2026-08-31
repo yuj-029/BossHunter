@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Select } from '@/components/ui/select'
+import { DialogShell } from '@/components/ui/dialog-shell'
 
 type ScoreScope = 'pending' | 'failed' | 'selected' | 'all_scored'
 
@@ -25,6 +28,7 @@ interface ScoringRun {
   remaining_job_ids: string[]
   progress?: Record<string, number>
   pause_reason?: string
+  error?: string
   recoverable?: boolean
 }
 
@@ -92,6 +96,12 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
     }
   }, [open, scope, limit, selectedJobIds.join(',')])
 
+  useEffect(() => {
+    if (!open) return
+    const timer = window.setInterval(() => { void loadRuns() }, 1500)
+    return () => window.clearInterval(timer)
+  }, [open])
+
   if (!open) return null
 
   const start = async () => {
@@ -130,8 +140,7 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
   const activeRun = runs.find(run => run.status === 'running' || run.status === 'paused')
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-5">
-      <div className="w-full max-w-xl rounded-3xl border border-card-border bg-white p-6 shadow-2xl">
+    <DialogShell className="max-w-xl" label="单独 AI 评分">
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">AI SCORING</div>
@@ -143,15 +152,15 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
         <div className="mt-5 space-y-4">
           <label className="block text-xs font-bold text-muted">
             评分范围
-            <select value={scope} onChange={event => setScope(event.target.value as ScoreScope)} className="mt-1 w-full rounded-xl border border-card-border bg-[#FFFCFA] px-3 py-2 text-sm text-foreground outline-none focus:border-primary">
+            <Select value={scope} onChange={event => setScope(event.target.value as ScoreScope)} className="mt-1 bg-surface-subtle">
               {Object.entries(scopeLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-            </select>
+            </Select>
           </label>
           <label className="block text-xs font-bold text-muted">
             数量（输入正整数，或输入“全部”）
-            <input value={limitText} onChange={event => setLimitText(event.target.value)} className="mt-1 w-full rounded-xl border border-card-border bg-[#FFFCFA] px-3 py-2 text-sm text-foreground outline-none focus:border-primary" />
+            <Input value={limitText} onChange={event => setLimitText(event.target.value)} className="mt-1 bg-surface-subtle" />
           </label>
-          {scope === 'selected' && <div className="rounded-xl bg-[#FFF0E5] px-3 py-2 text-sm text-primary">岗位池已选择 {selectedJobIds.length} 条</div>}
+          {scope === 'selected' && <div className="rounded-xl bg-surface-accent px-3 py-2 text-sm text-primary">岗位池已选择 {selectedJobIds.length} 条</div>}
           {preview && (
             <div className="grid grid-cols-2 gap-2 text-sm">
               <Metric label="符合条件" value={preview.eligible_jobs} />
@@ -164,22 +173,27 @@ export function ScoreJobsDialog({ open, selectedJobIds, onClose, onStart }: Scor
             基础预览不会调用 AI。正式评分会产生模型请求；单岗位格式错误会记录并继续，鉴权、额度、模型或连续网络错误会安全暂停。
           </div>
           {runs.filter(run => ['running', 'paused'].includes(run.status)).slice(0, 3).map(run => (
-            <div key={run.id} className="rounded-2xl border border-card-border bg-[#FFFCFA] p-3 text-sm">
+            <div key={run.id} className="rounded-2xl border border-card-border bg-surface-subtle p-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2"><span className="font-black">{run.status === 'running' ? '评分中' : '已暂停'} · 剩余 {run.remaining_job_ids.length} 个岗位</span><div className="flex gap-2">{run.status === 'running' && <Button variant="secondary" size="sm" onClick={() => void runAction(run, 'pause')}>暂停</Button>}{run.recoverable && <Button size="sm" onClick={() => void runAction(run, 'resume')}>继续</Button>}<Button variant="ghost" size="sm" onClick={() => void runAction(run, 'end')}>结束</Button></div></div>
               {run.pause_reason && <p className="mt-1 text-xs text-muted">{run.pause_reason}</p>}
             </div>
           ))}
-          {message && <div className="rounded-xl bg-[#FFF0E5] px-3 py-2 text-sm text-primary">{message}</div>}
+          {runs.filter(run => ['failed', 'completed_with_errors'].includes(run.status)).slice(0, 1).map(run => (
+            <div key={run.id} className="rounded-2xl border border-red-100 bg-red-50 p-3 text-sm text-danger">
+              <div className="font-black">{run.status === 'failed' ? '评分任务失败' : '评分完成，但存在失败岗位'}</div>
+              <p className="mt-1 text-xs leading-5">{run.error || run.pause_reason || '失败岗位已保留，请选择“只重试失败”再次处理。'}</p>
+            </div>
+          ))}
+          {message && <div className="rounded-xl bg-surface-accent px-3 py-2 text-sm text-primary">{message}</div>}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={onClose}>取消</Button>
             <Button onClick={start} disabled={loading || !limitValid || !preview?.eligible_jobs || Boolean(activeRun)}>{loading ? '处理中...' : '确认开始评分'}</Button>
           </div>
         </div>
-      </div>
-    </div>
+    </DialogShell>
   )
 }
 
 function Metric({ label, value }: { label: string; value: number }) {
-  return <div className="rounded-xl border border-card-border bg-[#FFFCFA] p-3"><div className="text-xs text-muted">{label}</div><div className="mt-1 text-xl font-black text-primary">{value}</div></div>
+  return <div className="rounded-xl border border-card-border bg-surface-subtle p-3"><div className="text-xs text-muted">{label}</div><div className="mt-1 text-xl font-black text-primary">{value}</div></div>
 }

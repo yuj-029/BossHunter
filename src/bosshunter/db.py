@@ -814,7 +814,7 @@ def get_active_platform_safety_lock(conn: sqlite3.Connection) -> dict[str, str] 
 def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[str, int]:
     """Get cumulative or local-calendar-day funnel counts for dashboard."""
     time_scope = (
-        "datetime(created_at, 'localtime') >= datetime('now', 'localtime', 'start of day')"
+        "datetime(created_at, '+8 hours') >= datetime('now', '+8 hours', 'start of day')"
         if today else "1 = 1"
     )
     scope = f"deleted_at IS NULL AND ({time_scope})"
@@ -853,12 +853,12 @@ def get_funnel_stats(conn: sqlite3.Connection, *, today: bool = False) -> dict[s
 def get_daily_activity(conn: sqlite3.Connection, days: int = 7) -> list[dict]:
     """Get daily activity for last N days."""
     rows = conn.execute("""
-        SELECT date(h.created_at) as day, h.action, COUNT(*) as cnt
+        SELECT date(h.created_at, '+8 hours') as day, h.action, COUNT(*) as cnt
         FROM history h
         JOIN jobs j ON h.job_id = j.id
-        WHERE h.created_at >= date('now', ?)
+        WHERE date(h.created_at, '+8 hours') >= date('now', '+8 hours', ?)
           AND j.deleted_at IS NULL
-        GROUP BY date(h.created_at), h.action
+        GROUP BY date(h.created_at, '+8 hours'), h.action
         ORDER BY day DESC
     """, (f"-{days} days",)).fetchall()
     return [dict(row) for row in rows]

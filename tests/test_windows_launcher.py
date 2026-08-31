@@ -14,8 +14,9 @@ class WindowsLauncherTests(unittest.TestCase):
 		self.assertIn("bosshunter.main", text)
 		self.assertIn("$PythonPath", text)
 		self.assertIn("Get-Command", text)
-		self.assertIn("remote-debugging-port=9222", text)
-		self.assertIn("http://127.0.0.1:8686", text)
+		self.assertIn("chrome://inspect/#remote-debugging", text)
+		self.assertIn("[int]$WebPort = 8686", text)
+		self.assertIn("http://127.0.0.1:$WebPort", text)
 		self.assertIn("-WindowStyle Hidden", text)
 		self.assertNotIn("C:\\Users\\123", text)
 

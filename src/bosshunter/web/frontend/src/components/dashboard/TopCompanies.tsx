@@ -13,7 +13,7 @@ export function TopCompanies({ data }: TopCompaniesProps) {
           <CardTitle>高分公司 TOP5</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-zinc-500">暂无数据</p>
+          <p className="text-sm text-muted">暂无数据</p>
         </CardContent>
       </Card>
     )
@@ -30,16 +30,16 @@ export function TopCompanies({ data }: TopCompaniesProps) {
         <div className="space-y-3">
           {data.map((company, i) => (
             <div key={i} className="flex items-center gap-3">
-              <span className="text-xs text-zinc-500 w-4">{i + 1}</span>
+              <span className="w-4 text-xs text-muted">{i + 1}</span>
               <div className="flex-1">
                 <div className="flex items-center justify-between mb-1">
-                  <span className="text-sm text-zinc-200 truncate max-w-[140px]">{company.company}</span>
+                  <span className="max-w-[140px] truncate text-sm font-bold text-foreground">{company.company}</span>
                   <div className="flex items-center gap-2">
-                    <span className="text-xs text-zinc-400">{company.job_count} 岗</span>
+                    <span className="text-xs text-muted">{company.job_count} 岗</span>
                     <span className="text-xs font-mono text-blue-400">{company.avg_score}</span>
                   </div>
                 </div>
-                <div className="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                <div className="h-1.5 overflow-hidden rounded-full bg-surface-accent">
                   <div
                     className="h-full bg-primary rounded-full transition-all"
                     style={{ width: `${(company.avg_score / maxScore) * 100}%` }}

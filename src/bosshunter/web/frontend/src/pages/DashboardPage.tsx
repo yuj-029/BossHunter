@@ -2,9 +2,15 @@ import { useEffect, useMemo, useState } from 'react'
 import { useDashboard, type CollectionProgress, type HistoryItem, type Job, type WorkbenchTask } from '@/hooks/useDashboard'
 import { useJobSearch, type JobSortKey, type JobSortOrder } from '@/hooks/useJobSearch'
 import { Button } from '@/components/ui/button'
+import { Select } from '@/components/ui/select'
+import { DialogShell } from '@/components/ui/dialog-shell'
+import { EmptyState, PageSkeleton } from '@/components/ui/async-state'
+import { PageHeader } from '@/components/layout/PageHeader'
 import { JobsTable } from '@/components/dashboard/JobsTable'
 import { RecycleBinPanel } from '@/components/dashboard/RecycleBinPanel'
 import { ScoreJobsDialog } from '@/components/dashboard/ScoreJobsDialog'
+import { TailoredResumePreviewDialog } from '@/components/dashboard/TailoredResumePreviewDialog'
+import { CustomGreetingDialog } from '@/components/dashboard/CustomGreetingDialog'
 import { CollectJobsDialog } from '@/components/dashboard/CollectJobsDialog'
 import { JobFilterBar } from '@/components/jobs/JobFilterBar'
 import { parseHistoryDetail } from '@/lib/historyDetail'
@@ -17,6 +23,8 @@ import {
 } from '@/lib/jobFilters'
 import { getActionLabel, getStatusLabel } from '@/lib/status'
 import { cn } from '@/lib/utils'
+import { useSessionState } from '@/lib/useSessionState'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
   AlertTriangle,
   BriefcaseBusiness,
@@ -33,7 +41,6 @@ import {
 } from 'lucide-react'
 
 type WorkbenchMode = 'full' | 'collect' | 'rescore' | 'monitor'
-type DashboardView = 'workbench' | 'jobs' | 'monitor'
 type StatsScope = 'today' | 'total'
 
 const TASK_STAGE_LABELS = [
@@ -70,7 +77,7 @@ function taskStatusText(status: string) {
 function taskStatusClass(status: string) {
   if (status === 'failed') return 'border-red-100 bg-red-50'
   if (status === 'completed' || status === 'stopped') return 'border-card-border bg-white'
-  return 'border-primary/20 bg-[#FFF0E5]'
+  return 'border-primary/20 bg-surface-accent'
 }
 
 function taskStatusTitle(status: string) {
@@ -124,10 +131,6 @@ function taskErrorFeedback(error: string) {
   }
 }
 
-interface DashboardPageProps {
-  view?: DashboardView
-}
-
 interface PreflightCheck {
   id: string
   title: string
@@ -140,8 +143,8 @@ interface PreflightCheck {
 const modes: Array<{ mode: WorkbenchMode; title: string; description: string }> = [
   {
     mode: 'full',
-    title: '运行全流程',
-    description: '采集 → AI评分 → 确认投递 → 打招呼 → 持续监测，一次跑完整流程。',
+    title: '采集并评分',
+    description: '采集 → API AI评分 → 进入待确认；不自动生成或发送招呼语。',
   },
   {
     mode: 'collect',
@@ -229,6 +232,7 @@ function PreflightPanel({
   checking: boolean
   onRetry: () => void
 }) {
+  const navigate = useNavigate()
   const actionableChecks = checks.filter(check => check.status !== 'pass')
   if (actionableChecks.length === 0) return null
 
@@ -238,7 +242,7 @@ function PreflightPanel({
   const heading = errors ? `启动检查发现 ${errors} 个问题` : `启动检查有 ${warnings} 项提醒`
 
   return (
-    <div className={`mt-3 rounded-3xl border p-4 ${
+    <div className={`mt-3 rounded-2xl border p-4 ${
       errors ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'
     }`}>
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -250,7 +254,7 @@ function PreflightPanel({
         </div>
         <div className="flex items-center gap-2">
           {needsConfig && (
-            <Button variant="secondary" size="sm" onClick={() => window.location.assign('/config')}>
+            <Button variant="secondary" size="sm" onClick={() => navigate('/config')}>
               打开配置
             </Button>
           )}
@@ -286,10 +290,10 @@ function PreflightPanel({
   )
 }
 
-export default function DashboardPage({ view = 'workbench' }: DashboardPageProps) {
+export default function DashboardPage() {
+  const navigate = useNavigate()
   const {
     workbench,
-    history,
     loading,
     error,
     refreshing,
@@ -297,18 +301,19 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
     refresh,
     startTask,
     stopTask,
-  } = useDashboard(view)
-  const [selected, setSelected] = useState<string[]>([])
+  } = useDashboard('workbench')
+  const [selected, setSelected] = useSessionState<string[]>('bosshunter.workbench.selected', [])
   const [notice, setNotice] = useState('')
   const [preflightChecks, setPreflightChecks] = useState<PreflightCheck[]>([])
   const [preflightMode, setPreflightMode] = useState<WorkbenchMode>('full')
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [modePending, setModePending] = useState<WorkbenchMode | null>(null)
   const [confirmedDeliveryIds, setConfirmedDeliveryIds] = useState<Set<string>>(new Set())
-  const [todayFilters, setTodayFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
-  const [statsScope, setStatsScope] = useState<StatsScope>('today')
+  const [todayFilters, setTodayFilters] = useSessionState<JobFilters>('bosshunter.workbench.filters', { ...EMPTY_JOB_FILTERS })
+  const [statsScope, setStatsScope] = useSessionState<StatsScope>('bosshunter.workbench.statsScope', 'today')
   const [collectDialogOpen, setCollectDialogOpen] = useState(false)
   const [collectDialogMode, setCollectDialogMode] = useState<'collect' | 'full'>('collect')
+  const [greetingJob, setGreetingJob] = useState<Job | null>(null)
 
   const todayJobs = useMemo(
     () => workbench.pending_confirmation.filter(job => !confirmedDeliveryIds.has(job.id)),
@@ -340,10 +345,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   }, [refresh])
 
   const pendingGreetingJobs = workbench.pending_greetings
+  const automatedGreetingEnabled = workbench.automated_greeting_enabled
   const activeTask = workbench.task
   const visibleTask = activeTask || workbench.last_task
   const visibleTaskError = visibleTask?.error ? taskErrorFeedback(visibleTask.error) : null
-  const pendingReplies = history.filter(item => item.action === 'reply_pending')
+  const todayPendingScoreCount = Math.max(
+    0,
+    (workbench.funnel_today['初筛通过'] || 0) - (workbench.funnel_today['AI评分'] || 0)
+  )
 
   const toggleJob = (id: string) => {
     setSelected(prev => (prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]))
@@ -439,12 +448,16 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   const confirmDeliver = async (ids: string[]) => {
     if (!ids.length) return
     const count = ids.length
-    if (!window.confirm(`是否投递以下 ${count} 个岗位？确认后将进入投递/打招呼流程。`)) return
+    const manualOnly = !automatedGreetingEnabled
+    const confirmation = manualOnly
+      ? `是否确认投递以下 ${count} 个岗位？系统不会自动生成或发送招呼语，确认后请在 BOSS 手动沟通。`
+      : `是否投递以下 ${count} 个岗位？确认后将进入投递/打招呼流程。`
+    if (!window.confirm(confirmation)) return
     try {
       const res = await fetch('/api/workbench/deliver', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ job_ids: ids }),
+        body: JSON.stringify({ job_ids: ids, manual_only: manualOnly }),
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -455,6 +468,11 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         setConfirmedDeliveryIds(prev => new Set([...prev, ...ids]))
       }
       await refresh()
+      if (data.manual_only) {
+        setNotice(`已确认投递 ${data.approved_count ?? count} 个岗位；自动打招呼保持关闭，请打开岗位链接手动完成沟通。`)
+        setSelected(prev => prev.filter(id => !new Set(ids).has(id)))
+        return
+      }
       setNotice(
         data.already_queued_count === count
           ? `所选 ${count} 个岗位已在当前发送队列中。`
@@ -548,26 +566,17 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
   }
 
   if (loading) {
-    return <div className="flex h-full items-center justify-center text-sm text-muted">加载中...</div>
-  }
-
-  if (view === 'jobs') {
-    return <JobsPoolView />
-  }
-
-  if (view === 'monitor') {
-    return <MonitorExecutionView history={history} refresh={refresh} />
+    return <PageSkeleton label="正在读取今日求职行动..." />
   }
 
   return (
     <div className="space-y-5">
-      <section id="today-workbench" className="scroll-mt-6 rounded-3xl border border-card-border bg-white p-5 shadow-sm">
-        <div className="flex items-start justify-between gap-4 mb-4">
-          <div>
-            <div className="text-xs font-black tracking-[0.18em] text-primary">TODAY WORKBENCH</div>
-            <h2 className="mt-1 text-3xl font-black tracking-tight">今日求职行动</h2>
-          </div>
-          <div className="flex items-center gap-2">
+      <PageHeader
+        eyebrow="TODAY WORKBENCH"
+        title="今日求职行动"
+        description="集中处理岗位采集、AI 评分、人工确认和后续跟进。"
+        actions={(
+          <>
             <div className="text-right">
               <Button variant="secondary" size="sm" onClick={refresh} disabled={refreshing}>
                 <RefreshCw className={cn('mr-2 h-4 w-4', refreshing && 'animate-spin')} />
@@ -579,13 +588,13 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 </div>
               )}
             </div>
-            <span className="rounded-full bg-[#FFF0E5] px-3 py-2 text-xs font-black text-primary">
+            <span className="rounded-full bg-surface-accent px-3 py-2 text-xs font-black text-primary">
               {activeTask ? `${activeTask.label}中` : '当前空闲'}
             </span>
-          </div>
-        </div>
-
-
+          </>
+        )}
+      />
+      <section id="today-workbench" className="scroll-mt-6 rounded-2xl border border-card-border bg-white p-5 shadow-sm">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
           {modes.map(item => {
             const isActive = activeTask?.mode === item.mode
@@ -609,12 +618,12 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                   else void handleModeClick(item.mode)
                 }}
                 aria-disabled={disabled}
-                className={`min-h-[126px] rounded-3xl p-5 text-left transition ${
+                className={`min-h-[126px] rounded-2xl p-5 text-left transition ${
                   isActive
                     ? 'border-2 border-primary bg-primary text-white shadow-xl shadow-primary/20'
                     : disabled
                       ? 'cursor-not-allowed border border-card-border bg-white text-muted opacity-45'
-                      : 'border border-card-border bg-[#FFFCFA] text-foreground hover:border-primary/60 hover:shadow-md'
+                      : 'border border-card-border bg-surface-subtle text-foreground hover:border-primary/60 hover:shadow-md'
                 }`}
               >
                 <div className="mb-3 flex items-center justify-between gap-3">
@@ -630,19 +639,19 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             )
           })}
         </div>
-        {notice && <div className="mt-3 rounded-2xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+        {notice && <div className="mt-3 rounded-2xl bg-surface-accent px-4 py-3 text-sm text-primary">{notice}</div>}
         {preflightChecks.some(check => check.status !== 'pass') && (
           <PreflightPanel checks={preflightChecks} checking={Boolean(modePending)} onRetry={retryPreflight} />
         )}
         {error && <div className="mt-3 rounded-2xl bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
         {visibleTask && (
-          <div className="mt-3 rounded-3xl border border-card-border bg-[#FFFCFA] p-4">
+          <div className="mt-3 rounded-2xl border border-card-border bg-surface-subtle p-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-black">任务运行状态</div>
                 <p className="mt-1 text-xs leading-5 text-muted">如果点击后浏览器没有反应，请先打开 BOSS 直聘并确认已登录；常见失败原因是 BOSS 未登录或 Chrome 调试连接不可用。</p>
               </div>
-              <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
+              <span className="rounded-full bg-surface-accent px-3 py-1 text-xs font-black text-primary">
                 {visibleTask.label}
               </span>
             </div>
@@ -678,14 +687,14 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
               </div>
             )}
             {visibleTask.stop_reason && (
-              <div className={`mt-3 rounded-2xl px-3 py-3 text-sm ${visibleTask.stop_reason === 'daily_limit' ? 'border border-amber-200 bg-amber-50 text-amber-800' : 'bg-[#FFF0E5] text-primary'}`}>
+              <div className={`mt-3 rounded-2xl px-3 py-3 text-sm ${visibleTask.stop_reason === 'daily_limit' ? 'border border-amber-200 bg-amber-50 text-amber-800' : 'bg-surface-accent text-primary'}`}>
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
                     <div className="font-black">{visibleTask.stop_reason === 'daily_limit' ? '本次未发送' : '任务说明'}</div>
                     <div className="mt-1">{taskStopReasonLabel(visibleTask.stop_reason)}</div>
                   </div>
                   {visibleTask.stop_reason === 'daily_limit' && (
-                    <Button size="sm" variant="secondary" onClick={() => { window.location.href = '/config?section=throttle' }}>
+                    <Button size="sm" variant="secondary" onClick={() => navigate('/config?section=throttle')}>
                       去设置发送额度
                     </Button>
                   )}
@@ -696,8 +705,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         )}
       </section>
 
-      {workbench.send_quota?.exhausted && (
-        <section className="rounded-3xl border border-amber-200 bg-amber-50 p-5 text-amber-800">
+      {automatedGreetingEnabled && workbench.send_quota?.exhausted && (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5 text-amber-800">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="text-lg font-black">今日发送额度已用完</h3>
@@ -705,7 +714,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 今日已发送 {workbench.send_quota.sent}/{workbench.send_quota.daily_limit} 条，未发送岗位已保留在“待发送招呼语”；明日额度恢复后再重试。
               </p>
             </div>
-            <Button variant="secondary" size="sm" onClick={() => { window.location.href = '/config?section=throttle' }}>
+            <Button variant="secondary" size="sm" onClick={() => navigate('/config?section=throttle')}>
               去设置发送额度
             </Button>
           </div>
@@ -756,9 +765,20 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             )
           })}
         </div>
+        {todayPendingScoreCount > 0 && (
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4">
+            <div>
+              <div className="text-sm font-black text-amber-900">今天还有 {todayPendingScoreCount} 条岗位待 AI 评分</div>
+              <p className="mt-1 text-xs leading-5 text-amber-800">评分通过后才会进入“今日待确认”；点击后先展示请求数量和费用风险，不会直接开始评分。</p>
+            </div>
+            <Button size="sm" onClick={() => navigate('/jobs?score=pending')}>
+              评分待处理 {todayPendingScoreCount} 条
+            </Button>
+          </div>
+        )}
       </section>
 
-      <section className="rounded-3xl border border-card-border bg-white p-5">
+      <section className="rounded-2xl border border-card-border bg-white p-5 shadow-sm">
         <div className="mb-4 flex items-center justify-between gap-4">
           <div>
             <h3 className="text-lg font-black">优先处理：HR 要简历 / 定制简历下载</h3>
@@ -769,10 +789,10 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         {workbench.needs_resume.length ? (
           <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
             {workbench.needs_resume.slice(0, 4).map(job => (
-              <div key={job.id} className="rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+              <div key={job.id} className="rounded-2xl border border-card-border bg-surface-subtle p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div className="font-black">{job.company}｜{job.title}</div>
-                  <span className="rounded-full bg-[#FFF0E5] px-2 py-1 text-[11px] font-black text-primary">待发简历</span>
+                  <span className="rounded-full bg-surface-accent px-2 py-1 text-[11px] font-black text-primary">待发简历</span>
                 </div>
                 <p className="mt-2 text-sm leading-6 text-muted">HR 已请求简历，系统已准备定制化简历下载入口。</p>
                 <div className="mt-3 flex gap-2">
@@ -783,12 +803,12 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
             ))}
           </div>
         ) : (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-sm text-muted">当前没有 HR 要简历事项。</div>
+          <EmptyState title="当前没有 HR 要简历事项" />
         )}
       </section>
 
-      {workbench.send_errors.length > 0 && (
-        <section className="rounded-3xl border border-red-100 bg-red-50 p-5">
+      {automatedGreetingEnabled && workbench.send_errors.length > 0 && (
+        <section className="rounded-2xl border border-red-100 bg-red-50 p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black text-danger">发送失败待处理</h3>
@@ -822,8 +842,8 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </section>
       )}
 
-      {pendingGreetingJobs.length > 0 && (
-        <section className="rounded-3xl border border-primary/20 bg-[#FFF0E5] p-5">
+      {automatedGreetingEnabled && pendingGreetingJobs.length > 0 && (
+        <section className="rounded-2xl border border-primary/20 bg-surface-accent p-5">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
             <div>
               <h3 className="text-lg font-black">待发送招呼语</h3>
@@ -842,7 +862,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                     <div className="font-black">{job.company}｜{job.title}</div>
                     <div className="mt-1 text-xs text-primary">已生成招呼语，等待发送</div>
                   </div>
-                  <span className="rounded-full bg-[#FFF0E5] px-2 py-1 text-[11px] font-black text-primary">待发送</span>
+                  <span className="rounded-full bg-surface-accent px-2 py-1 text-[11px] font-black text-primary">待发送</span>
                 </div>
                 <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.greeting || '招呼语已生成，等待发送。'}</p>
                 <div className="mt-3 flex gap-2">
@@ -857,17 +877,24 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
         </section>
       )}
 
-      <section className="rounded-3xl border border-card-border bg-white p-5">
+      <section className="rounded-2xl border border-card-border bg-white p-5 shadow-sm">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
           <div>
             <h3 className="text-lg font-black">今日待确认</h3>
-            <p className="mt-1 text-xs text-muted">展示需要你人工确认是否推进投递的岗位，支持全选、部分选择、一键投递。</p>
+            <p className="mt-1 text-xs text-muted">评估结果供人工筛选；可生成并复制定制招呼语，系统不会自动发送。</p>
           </div>
           <div className="flex gap-2">
             <Button variant="secondary" size="sm" onClick={() => setSelected(filteredTodayJobs.map(job => job.id))}>全选</Button>
             <Button variant="secondary" size="sm" onClick={() => setSelected([])}>清空</Button>
             <Button variant="secondary" size="sm" onClick={() => rejectSelectedJobs(actionableSelected)}>放弃已选 {actionableSelected.length} 个</Button>
-            <Button size="sm" onClick={() => confirmDeliver(actionableSelected)}>一键投递已选 {actionableSelected.length} 个</Button>
+            <Button
+              size="sm"
+              disabled={actionableSelected.length !== 1}
+              onClick={() => setGreetingJob(filteredTodayJobs.find(job => job.id === actionableSelected[0]) || null)}
+            >
+              <MessageCircle className="mr-1 h-4 w-4" />{actionableSelected.length === 1 ? '生成定制招呼语' : '生成招呼语（先选1个）'}
+            </Button>
+            <Button variant="secondary" size="sm" disabled={!actionableSelected.length} onClick={() => confirmDeliver(actionableSelected)}>一键投递已选 {actionableSelected.length} 个</Button>
           </div>
         </div>
         <JobFilterBar
@@ -887,21 +914,21 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
                 selected={selected.includes(job.id)}
                 onToggle={() => toggleJob(job.id)}
                 onDetail={() => openJobDetail(job)}
+                onGreeting={() => setGreetingJob(job)}
+                onDeliver={() => confirmDeliver([job.id])}
                 onReject={() => rejectSelectedJobs([job.id])}
               />
             ))}
           </div>
         ) : todayJobs.length ? (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-center text-sm text-muted">
-            <p>没有符合当前条件的岗位</p>
-            <Button className="mt-3" variant="secondary" size="sm" onClick={() => setTodayFilters({ ...EMPTY_JOB_FILTERS })}>重置筛选</Button>
-          </div>
+          <EmptyState title="没有符合当前条件的岗位" action={<Button variant="secondary" size="sm" onClick={() => setTodayFilters({ ...EMPTY_JOB_FILTERS })}>重置筛选</Button>} />
         ) : (
-          <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-sm text-muted">今天暂时没有待确认岗位。</div>
+          <EmptyState title="今天暂时没有待确认岗位" description="采集并评分后，合适岗位会进入这里等待人工确认。" />
         )}
       </section>
 
       {selectedJob && <JobDetailModal job={selectedJob} onClose={() => setSelectedJob(null)} />}
+      <CustomGreetingDialog job={greetingJob} onClose={() => setGreetingJob(null)} onGenerated={() => void refresh()} />
       <CollectJobsDialog
         open={collectDialogOpen}
         mode={collectDialogMode}
@@ -915,7 +942,7 @@ export default function DashboardPage({ view = 'workbench' }: DashboardPageProps
 
 function CollectionProgressPanel({ progress }: { progress: CollectionProgress }) {
   return (
-    <div className="mt-3 rounded-2xl border border-primary/20 bg-[#FFF0E5] p-4">
+    <div className="mt-3 rounded-2xl border border-primary/20 bg-surface-accent p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-sm font-black text-primary">多平台采集进度</div>
         <div className="text-xs font-bold text-muted">{progress.outcome === 'running' ? '执行中' : progress.outcome || '已结束'}</div>
@@ -939,9 +966,26 @@ function CollectionProgressPanel({ progress }: { progress: CollectionProgress })
   )
 }
 
-function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: Job; selected: boolean; onToggle: () => void; onDetail: () => void; onReject: () => void }) {
+function bossPlatformUrl(job: Job) {
+  const fallback = 'https://www.zhipin.com/'
+  if (!job.url?.trim()) return fallback
+  try {
+    const parsed = new URL(job.url)
+    if (
+      parsed.protocol === 'https:'
+      && (parsed.hostname === 'zhipin.com' || parsed.hostname.endsWith('.zhipin.com'))
+    ) {
+      return parsed.toString()
+    }
+  } catch {
+    return fallback
+  }
+  return fallback
+}
+
+function JobActionCard({ job, selected, onToggle, onDetail, onGreeting, onDeliver, onReject }: { job: Job; selected: boolean; onToggle: () => void; onDetail: () => void; onGreeting: () => void; onDeliver: () => void; onReject: () => void }) {
   return (
-    <div className={`rounded-2xl border p-4 ${selected ? 'border-primary bg-[#FFFCFA]' : 'border-card-border bg-[#FFFCFA]'}`}>
+    <div className={`rounded-2xl border p-4 ${selected ? 'border-primary bg-surface-subtle' : 'border-card-border bg-surface-subtle'}`}>
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="font-black">{job.company}｜{job.title}</div>
@@ -951,8 +995,10 @@ function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: J
       </div>
       <p className="mt-3 line-clamp-2 text-sm leading-6 text-muted">{job.score_reason || job.greeting || '等待继续推进。'}</p>
       <div className="mt-3 flex flex-wrap gap-2">
+        <Button size="sm" onClick={onGreeting}><MessageCircle className="mr-2 h-4 w-4" />{job.greeting ? '查看招呼语' : '生成定制招呼语'}</Button>
+        <Button variant="secondary" size="sm" onClick={onDeliver}><Send className="mr-2 h-4 w-4" />一键投递</Button>
         <Button variant="secondary" size="sm" onClick={onDetail}><Eye className="mr-2 h-4 w-4" />查看详情</Button>
-        <Button variant="secondary" size="sm" disabled={!job.url} onClick={() => window.open(job.url, '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-2 h-4 w-4" />跳转岗位链接</Button>
+        <Button variant="secondary" size="sm" onClick={() => window.open(bossPlatformUrl(job), '_blank', 'noopener,noreferrer')}><ExternalLink className="mr-2 h-4 w-4" />打开平台</Button>
         <Button variant="secondary" size="sm" onClick={onReject}><XCircle className="mr-2 h-4 w-4" />放弃岗位</Button>
       </div>
     </div>
@@ -961,8 +1007,7 @@ function JobActionCard({ job, selected, onToggle, onDetail, onReject }: { job: J
 
 function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-6">
-      <div className="max-h-[86vh] w-full max-w-3xl overflow-y-auto rounded-3xl border border-card-border bg-white p-6 shadow-2xl">
+    <DialogShell className="max-w-3xl" label="岗位详情">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <div className="text-xs font-black tracking-[0.18em] text-primary">岗位详情</div>
@@ -979,43 +1024,93 @@ function JobDetailModal({ job, onClose }: { job: Job; onClose: () => void }) {
           <InfoBlock label="匹配分" value={String(job.score || '-')} />
           <InfoBlock label="定制简历" value={job.resume_path || '未生成'} />
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface-subtle p-4">
           <div className="text-sm font-black">评分理由</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.score_reason || '-'}</p>
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface-subtle p-4">
           <div className="text-sm font-black">招呼语</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.greeting || '未生成'}</p>
         </div>
-        <div className="mt-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+        <div className="mt-4 rounded-2xl border border-card-border bg-surface-subtle p-4">
           <div className="text-sm font-black">JD</div>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-muted">{job.jd || '-'}</p>
         </div>
-      </div>
-    </div>
+    </DialogShell>
   )
 }
 
 function InfoBlock({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+    <div className="rounded-2xl border border-card-border bg-surface-subtle p-4">
       <div className="text-xs text-muted">{label}</div>
       <div className="mt-1 font-bold text-foreground">{value}</div>
     </div>
   )
 }
 
+export function JobsPage() {
+  return <JobsPoolView />
+}
+
+export function MonitorPage() {
+  const { history, loading, error, refresh } = useDashboard('monitor')
+  if (loading) return <PageSkeleton label="正在读取监测记录..." />
+
+  return (
+    <div className="space-y-4">
+      <PageHeader
+        title="监测执行"
+        description="这里不启动监测，只处理监测发现的 HR 问题、回复建议和结果。"
+      />
+      {error && <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
+      <MonitorExecutionView history={history} refresh={refresh} />
+    </div>
+  )
+}
+
+function filtersFromSearchParams(params: URLSearchParams): JobFilters {
+  return {
+    query: params.get('q') || '',
+    minScore: params.get('minScore') || '',
+    salaryMin: params.get('salaryMin') || '',
+    salaryMax: params.get('salaryMax') || '',
+    status: params.get('status') || '',
+    createdWithin: params.get('createdWithin') || '',
+    sourcePlatform: params.get('sourcePlatform') || '',
+    education: params.get('education') || '',
+    recruitmentType: params.get('recruitmentType') || '',
+  }
+}
+
+const jobFilterParams: Record<keyof JobFilters, string> = {
+  query: 'q',
+  minScore: 'minScore',
+  salaryMin: 'salaryMin',
+  salaryMax: 'salaryMax',
+  status: 'status',
+  createdWithin: 'createdWithin',
+  sourcePlatform: 'sourcePlatform',
+  education: 'education',
+  recruitmentType: 'recruitmentType',
+}
+
+const jobSortKeys: JobSortKey[] = ['salary', 'education', 'score', 'status', 'hr_active', 'created_at']
+
 function JobsPoolView() {
   const pageSize = 15
-  const [page, setPage] = useState(0)
-  const [filters, setFilters] = useState<JobFilters>({ ...EMPTY_JOB_FILTERS })
-  const [selectedIds, setSelectedIds] = useState<string[]>([])
+  const [searchParams, setSearchParams] = useSearchParams()
+  const filters = useMemo(() => filtersFromSearchParams(searchParams), [searchParams])
+  const page = Math.max((Number(searchParams.get('page')) || 1) - 1, 0)
+  const requestedSort = searchParams.get('sortBy') as JobSortKey | null
+  const sortBy = requestedSort && jobSortKeys.includes(requestedSort) ? requestedSort : 'created_at'
+  const sortOrder: JobSortOrder = searchParams.get('sortOrder') === 'asc' ? 'asc' : 'desc'
+  const showRecycleBin = searchParams.get('view') === 'recycle'
+  const showScoreDialog = searchParams.get('score') === 'pending'
+  const [selectedIds, setSelectedIds] = useSessionState<string[]>('bosshunter.jobs.selected', [])
+  const [resumePreviewJob, setResumePreviewJob] = useState<Job | null>(null)
+  const [customGreetingJob, setCustomGreetingJob] = useState<Job | null>(null)
   const [notice, setNotice] = useState('')
-  const [showRecycleBin, setShowRecycleBin] = useState(false)
-  const [showScoreDialog, setShowScoreDialog] = useState(false)
-  const [quickScoring, setQuickScoring] = useState(false)
-  const [sortBy, setSortBy] = useState<JobSortKey>('created_at')
-  const [sortOrder, setSortOrder] = useState<JobSortOrder>('desc')
   const [recycleJobs, setRecycleJobs] = useState<Job[]>([])
   const [recycleSelectedIds, setRecycleSelectedIds] = useState<string[]>([])
   const [recycleLoading, setRecycleLoading] = useState(false)
@@ -1026,10 +1121,45 @@ function JobsPoolView() {
   const deliveryTask = deliveryWorkbench.task?.mode === 'deliver'
     ? deliveryWorkbench.task
     : deliveryWorkbench.last_task?.mode === 'deliver' ? deliveryWorkbench.last_task : null
+  const automatedGreetingEnabled = deliveryWorkbench.automated_greeting_enabled
 
-  useEffect(() => {
-    setPage(0)
-  }, [filters.query, filters.minScore, filters.salaryMin, filters.salaryMax, filters.status, filters.createdWithin, filters.sourcePlatform, filters.education, filters.recruitmentType])
+  const updateSearch = (mutate: (next: URLSearchParams) => void) => {
+    const next = new URLSearchParams(searchParams)
+    mutate(next)
+    setSearchParams(next, { replace: true })
+  }
+
+  const setFilters = (nextFilters: JobFilters) => {
+    updateSearch(next => {
+      Object.entries(jobFilterParams).forEach(([key, param]) => {
+        const value = nextFilters[key as keyof JobFilters]
+        if (value) next.set(param, value)
+        else next.delete(param)
+      })
+      next.delete('page')
+    })
+  }
+
+  const setPage = (nextPage: number) => {
+    updateSearch(next => {
+      if (nextPage > 0) next.set('page', String(nextPage + 1))
+      else next.delete('page')
+    })
+  }
+
+  const setShowRecycleBin = (open: boolean) => {
+    updateSearch(next => {
+      if (open) next.set('view', 'recycle')
+      else next.delete('view')
+    })
+  }
+
+  const setShowScoreDialog = (open: boolean) => {
+    updateSearch(next => {
+      if (open) next.set('score', 'pending')
+      else next.delete('score')
+    })
+  }
 
   const toggleSelected = (jobId: string) => {
     setSelectedIds(previous => previous.includes(jobId) ? previous.filter(id => id !== jobId) : [...previous, jobId])
@@ -1044,13 +1174,14 @@ function JobsPoolView() {
   }
 
   const changeSort = (nextSortBy: JobSortKey) => {
-    setPage(0)
-    if (nextSortBy === sortBy) {
-      setSortOrder(previous => previous === 'asc' ? 'desc' : 'asc')
-      return
-    }
-    setSortBy(nextSortBy)
-    setSortOrder(nextSortBy === 'score' || nextSortBy === 'created_at' ? 'desc' : 'asc')
+    updateSearch(next => {
+      const nextOrder = nextSortBy === sortBy
+        ? (sortOrder === 'asc' ? 'desc' : 'asc')
+        : (nextSortBy === 'score' || nextSortBy === 'created_at' ? 'desc' : 'asc')
+      next.set('sortBy', nextSortBy)
+      next.set('sortOrder', nextOrder)
+      next.delete('page')
+    })
   }
 
   const loadRecycleBin = async () => {
@@ -1248,26 +1379,20 @@ function JobsPoolView() {
     setNotice(`独立评分已启动，共 ${data.run?.remaining_job_ids?.length || 0} 个岗位。`)
   }
 
-  const startQuickScoring = async () => {
-    if (!window.confirm('将对岗位池中所有未评分或评分失败的岗位启动 AI 评分，可能产生模型费用，是否继续？')) return
-    setQuickScoring(true)
-    try {
-      await startScoring({ scope: 'pending', limit: null, job_ids: [], force_rescore: false })
-    } catch (cause) {
-      setNotice(cause instanceof Error ? cause.message : '启动 AI 评分失败')
-    } finally {
-      setQuickScoring(false)
-    }
-  }
-
   if (showRecycleBin) {
     return (
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <Button variant="ghost" size="sm" onClick={() => setShowRecycleBin(false)}>返回岗位池</Button>
-          <Button variant="secondary" size="sm" onClick={() => void loadRecycleBin()} disabled={recycleLoading}>刷新回收站</Button>
-        </div>
-        {notice && <div className="rounded-xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+      <div className="space-y-4">
+        <PageHeader
+          title="回收站"
+          description="保留岗位状态、评分、招呼语和历史；恢复后不会自动启动评分或投递。"
+          actions={(
+            <>
+              <Button variant="ghost" size="sm" onClick={() => setShowRecycleBin(false)}>返回岗位池</Button>
+              <Button variant="secondary" size="sm" onClick={() => void loadRecycleBin()} disabled={recycleLoading}>刷新回收站</Button>
+            </>
+          )}
+        />
+        {notice && <div className="rounded-xl bg-surface-accent px-4 py-3 text-sm text-primary">{notice}</div>}
         <RecycleBinPanel
           jobs={recycleJobs}
           selectedIds={recycleSelectedIds}
@@ -1278,30 +1403,28 @@ function JobsPoolView() {
           onPermanentDelete={requestPermanentDelete}
         />
         {permanentDeleteIds.length > 0 && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4" role="dialog" aria-modal="true">
-            <div className="w-full max-w-lg rounded-3xl border border-red-200 bg-white p-6 shadow-2xl">
+          <DialogShell className="max-w-lg border-red-200" label="确认永久删除">
               <div className="flex items-start gap-3"><AlertTriangle className="mt-0.5 h-6 w-6 shrink-0 text-danger" /><div><h3 className="text-xl font-black">确认永久删除</h3><p className="mt-2 text-sm leading-6 text-muted">将永久删除 {permanentDeleteIds.length} 条岗位及其历史，无法恢复。存在发送或回复证据的岗位会被后端拒绝删除。</p></div></div>
               <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-2xl border border-red-100 bg-red-50 p-3 text-sm font-bold"><input type="checkbox" checked={permanentDeleteAcknowledged} onChange={event => setPermanentDeleteAcknowledged(event.target.checked)} className="mt-0.5 h-4 w-4 accent-danger" /><span>我确认永久删除，并了解此操作无法撤销。</span></label>
               <div className="mt-6 flex justify-end gap-3"><Button variant="secondary" size="sm" onClick={() => setPermanentDeleteIds([])}>取消</Button><Button variant="destructive" size="sm" disabled={!permanentDeleteAcknowledged} onClick={() => void confirmPermanentDelete()}>永久删除</Button></div>
-            </div>
-          </div>
+          </DialogShell>
         )}
       </div>
     )
   }
 
   return (
-    <div className="rounded-3xl border border-card-border bg-white p-5">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-black">岗位池</h2>
-          <p className="mt-1 text-sm text-muted">集中查看已采集岗位、AI 分数、状态和详情入口。</p>
-        </div>
-        <div className="flex items-center gap-2">
+    <div className="space-y-4">
+      <PageHeader
+        title="岗位池"
+        description="集中查看已采集岗位、AI 分数、状态和详情入口。筛选、分页和排序会保留在当前地址中。"
+        actions={(
+          <>
           <Button variant="secondary" size="sm" onClick={() => { setShowRecycleBin(true); void loadRecycleBin() }}><Trash2 className="mr-1 h-4 w-4" />回收站 ({recycleJobs.length})</Button>
           <BriefcaseBusiness className="h-6 w-6 text-primary" />
-        </div>
-      </div>
+          </>
+        )}
+      />
       <JobFilterBar
         filters={filters}
         onChange={setFilters}
@@ -1312,31 +1435,29 @@ function JobsPoolView() {
         showStatus
         showSource
       />
-      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-card-border bg-white p-3 text-xs shadow-sm">
         <Button variant="secondary" size="sm" disabled={!items.length} onClick={toggleCurrentPage}>
           {allPageSelected ? '取消选择本页' : '选择本页'}
         </Button>
-        <span className="rounded-full bg-[#FFF0E5] px-3 py-2 font-bold text-primary">已选择 {selectedIds.length} 条</span>
+        <span className="rounded-full bg-surface-accent px-3 py-2 font-bold text-primary">已选择 {selectedIds.length} 条</span>
         {selectedIds.length > 0 && <Button variant="ghost" size="sm" onClick={() => setSelectedIds([])}>清空选择</Button>}
         <Button variant="destructive" size="sm" disabled={!selectedIds.length} onClick={() => void softDelete(selectedIds)}>移入回收站</Button>
-        <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
+        {automatedGreetingEnabled && <Button size="sm" disabled={!selectedIds.length} onClick={() => void deliverSelectedJobs()}>
           <Send className="mr-1 h-4 w-4" />BOSS 一键投递已选
-        </Button>
-        <Button size="sm" onClick={() => void startQuickScoring()} disabled={quickScoring || !total}>
-          {quickScoring ? '启动评分中…' : '一键 AI 评分'}
-        </Button>
-        <Button variant="secondary" size="sm" onClick={() => setShowScoreDialog(true)}>评分选项</Button>
+        </Button>}
+        <Button size="sm" onClick={() => setShowScoreDialog(true)} disabled={!total}>评分全部待评分岗位</Button>
+        <Button variant="secondary" size="sm" onClick={() => setShowScoreDialog(true)}>自定义评分</Button>
         <ExportMenu onExport={exportJobs} hasSelection={selectedIds.length > 0} hasFiltered={total > 0} />
       </div>
-      {notice && <div className="mb-4 rounded-xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
-      {deliveryTask && (
-        <div className="mb-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-4">
+      {notice && <div className="rounded-xl bg-surface-accent px-4 py-3 text-sm text-primary">{notice}</div>}
+      {automatedGreetingEnabled && deliveryTask && (
+        <div className="rounded-2xl border border-card-border bg-surface-subtle p-4">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-sm font-black">投递队列</div>
               <p className="mt-1 text-xs text-muted">只展示已人工确认的 BOSS 发送任务；智联和 51job 不会进入此队列。</p>
             </div>
-            <span className="rounded-full bg-[#FFF0E5] px-3 py-1 text-xs font-black text-primary">
+            <span className="rounded-full bg-surface-accent px-3 py-1 text-xs font-black text-primary">
               {deliveryTask.status === 'running' ? '处理中' : deliveryTask.status === 'completed' ? '已完成' : deliveryTask.status === 'failed' ? '失败' : deliveryTask.status}
             </span>
           </div>
@@ -1346,7 +1467,7 @@ function JobsPoolView() {
           </div>
         </div>
       )}
-      {error && <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
+      {error && <div className="rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-danger">{error}</div>}
       <JobsTable
         jobs={items}
         page={page}
@@ -1357,6 +1478,9 @@ function JobsPoolView() {
         onToggleSelected={toggleSelected}
         onSoftDelete={job => void softDelete([job.id])}
         onMarkManuallySent={job => void markManuallySent(job)}
+        onDownloadResume={job => window.open(`/api/jobs/${job.id}/resume/download`, '_blank')}
+        onTailorResume={setResumePreviewJob}
+        onCustomGreeting={setCustomGreetingJob}
         loading={loading}
         sortBy={sortBy}
         sortOrder={sortOrder}
@@ -1368,6 +1492,8 @@ function JobsPoolView() {
         onClose={() => setShowScoreDialog(false)}
         onStart={startScoring}
       />
+      <TailoredResumePreviewDialog job={resumePreviewJob} onClose={() => setResumePreviewJob(null)} onGenerated={refreshJobs} />
+      <CustomGreetingDialog job={customGreetingJob} onClose={() => setCustomGreetingJob(null)} onGenerated={refreshJobs} />
     </div>
   )
 }
@@ -1384,14 +1510,14 @@ function ExportMenu({
   const [format, setFormat] = useState<'xlsx' | 'csv'>('xlsx')
   return (
     <div className="ml-auto flex flex-wrap items-center gap-2">
-      <select
+      <Select
         value={format}
         onChange={event => setFormat(event.target.value as 'xlsx' | 'csv')}
-        className="rounded-xl border border-card-border bg-white px-2 py-2 text-xs outline-none focus:border-primary"
+        className="w-auto min-w-20 text-xs"
       >
         <option value="xlsx">XLSX</option>
         <option value="csv">CSV</option>
-      </select>
+      </Select>
       <Button variant="secondary" size="sm" disabled={!hasFiltered} onClick={() => onExport(format, 'filtered')}>导出筛选结果</Button>
       <Button variant="secondary" size="sm" disabled={!hasSelection} onClick={() => onExport(format, 'selected')}>导出所选岗位</Button>
       <Button variant="secondary" size="sm" onClick={() => onExport(format, 'all')}>导出全部岗位</Button>
@@ -1470,6 +1596,12 @@ function MonitorExecutionView({ history, refresh }: { history: HistoryItem[]; re
   const displayedHistory = activeMonitorFilter === 'pending' || activeMonitorFilter === 'resume'
     ? visibleHistory
     : visibleHistory.slice(0, 8)
+  const emptyState = {
+    pending: ['暂无待处理事项', '监测发现需要人工处理的 HR 问题后，会显示在这里。'],
+    resume: ['暂无简历请求', '收到 HR 简历请求后，会显示定制简历的生成与发送状态。'],
+    follow_up: ['暂无自动跟进记录', '符合跟进条件的历史记录会显示在这里。'],
+    replied: ['暂无已回复记录', 'HR 回复或人工处理完成后，会归档在这里。'],
+  }[activeMonitorFilter]
   const [replyDrafts, setReplyDrafts] = useState<Record<number, string>>({})
   const [notice, setNotice] = useState('')
 
@@ -1512,14 +1644,7 @@ function MonitorExecutionView({ history, refresh }: { history: HistoryItem[]; re
   }
 
   return (
-    <div className="rounded-3xl border border-card-border bg-white p-5">
-      <div className="mb-4 flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-black">监测执行</h2>
-          <p className="mt-1 text-sm text-muted">这里不启动监测，只处理监测发现的 HR 问题、回复建议和结果。</p>
-        </div>
-        <span className="rounded-full bg-[#FFF0E5] px-3 py-2 text-xs font-black text-primary">待处理 {pendingItems.length}</span>
-      </div>
+    <div className="rounded-2xl border border-card-border bg-white p-5 shadow-sm">
       <div className="mb-4 flex flex-wrap gap-2">
         {[
           { key: 'pending' as const, label: '待处理', count: pendingItems.length },
@@ -1540,7 +1665,7 @@ function MonitorExecutionView({ history, refresh }: { history: HistoryItem[]; re
           )
         })}
       </div>
-      {notice && <div className="mb-3 rounded-2xl bg-[#FFF0E5] px-4 py-3 text-sm text-primary">{notice}</div>}
+      {notice && <div className="mb-3 rounded-2xl bg-surface-accent px-4 py-3 text-sm text-primary">{notice}</div>}
       <div className="space-y-3">
         {displayedHistory.map((item, index) => {
           const canReply = item.action === 'reply_pending'
@@ -1556,7 +1681,7 @@ function MonitorExecutionView({ history, refresh }: { history: HistoryItem[]; re
           const aiReplyText = parsed.aiReply || item.detail || getActionLabel(item.action)
           const systemFailureReason = parsed.systemReason || (isResumeFailure ? '未获得更具体的错误信息，请查看运行日志。' : '')
           return (
-            <div key={`${item.created_at}-${index}`} className="grid gap-3 rounded-2xl border border-card-border bg-[#FFFCFA] p-4 lg:grid-cols-[130px_1fr_160px]">
+            <div key={`${item.created_at}-${index}`} className="grid gap-3 rounded-2xl border border-card-border bg-surface-subtle p-4 lg:grid-cols-[130px_1fr_160px]">
               <div className="text-xs text-muted">
                 <div>{item.created_at}</div>
                 <div className="mt-2 rounded-full bg-white px-2 py-1 text-center font-bold text-primary">{getActionLabel(item.action)}</div>
@@ -1618,7 +1743,7 @@ function MonitorExecutionView({ history, refresh }: { history: HistoryItem[]; re
             </div>
           )
         })}
-        {!visibleHistory.length && <div className="rounded-2xl border border-dashed border-card-border bg-[#FFFCFA] p-5 text-sm text-muted">暂无待处理 HR 问题。</div>}
+        {!visibleHistory.length && <EmptyState title={emptyState[0]} description={emptyState[1]} />}
       </div>
     </div>
   )

@@ -496,8 +496,19 @@ def _review_with_token_retry(greeting: str, job: dict, config: dict) -> dict | N
         raise
 
 
+def generate_greeting_draft(job: dict, config: dict) -> str | None:
+    """Generate one greeting draft without changing status or sending it."""
+    resume_summary = _get_resume_summary(config)
+    if not resume_summary:
+        raise ValueError("无法读取基础简历，请先在配置页设置有效的简历文件")
+    return _generate_with_token_retry(job, resume_summary, config)
+
+
 def generate_greetings(config: dict) -> int:
     """Generate greetings for approved jobs with optional self-review. Returns count generated."""
+    if config.get("delivery", {}).get("automated_greeting_enabled", True) is False:
+        console.print("[yellow]自动打招呼已取消，不生成招呼语。[/yellow]")
+        return 0
     db = get_db()
     jobs = get_jobs_by_status(db, "approved")
     _workbench_job_ids = {str(job_id) for job_id in config.get("_workbench_job_ids", [])}

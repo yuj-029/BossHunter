@@ -33,13 +33,13 @@ export function TagsInput({ value, onChange, placeholder = '输入后按回车�
 
   return (
     <div className={cn(
-      'flex flex-wrap gap-1.5 min-h-[36px] p-2 rounded-md border border-card-border bg-white focus-within:ring-2 focus-within:ring-primary/30 focus-within:border-primary',
+      'flex min-h-[36px] flex-wrap gap-1.5 rounded-xl border border-card-border bg-white p-2 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/30',
       className
     )}>
       {value.map((tag, i) => (
         <span
           key={i}
-          className="inline-flex items-center gap-1 rounded-md bg-[#FFF0E5] px-2 py-0.5 text-xs font-bold text-primary"
+          className="inline-flex items-center gap-1 rounded-full bg-surface-accent px-2 py-0.5 text-xs font-bold text-primary"
         >
           {tag}
           <button

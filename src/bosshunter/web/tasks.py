@@ -18,6 +18,7 @@ MODE_LABELS = {
     "rescore": "重新评分",
     "monitor": "单独监测",
     "deliver": "确认投递",
+    "resume": "AI 定制简历",
 }
 
 TERMINAL_STATUSES = {"completed", "failed", "stopped"}

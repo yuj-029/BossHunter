@@ -1,11 +1,12 @@
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from bosshunter.db import (
     get_db,
+    get_daily_activity,
     get_funnel_stats,
     get_jobs_pending_confirmation,
     get_jobs_ready_to_send,
@@ -555,7 +556,6 @@ class JobSelectionTests(unittest.TestCase):
             ]
 
             with patch("bosshunter.db.DB_PATH", db_path), \
-                 patch("bosshunter.executor.sender.should_take_day_off", return_value=False), \
                  patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True), \
                  patch("bosshunter.executor.sender._send_greeting_once", side_effect=attempts) as send_once, \
                  patch("bosshunter.executor.sender.close_tab") as close_tab:
@@ -586,7 +586,6 @@ class JobSelectionTests(unittest.TestCase):
                 "skip_backoff": True,
             }
             with patch("bosshunter.db.DB_PATH", db_path), \
-                 patch("bosshunter.executor.sender.should_take_day_off", return_value=False), \
                  patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True), \
                  patch(
                      "bosshunter.executor.sender._send_greeting_once",
@@ -629,7 +628,6 @@ class JobSelectionTests(unittest.TestCase):
                 },
             }
             with patch("bosshunter.db.DB_PATH", db_path), \
-                 patch("bosshunter.executor.sender.should_take_day_off", return_value=False), \
                  patch("bosshunter.executor.sender.SendWindowChecker.is_active", return_value=True), \
                  patch(
                      "bosshunter.executor.sender._send_greeting_once",
@@ -835,6 +833,33 @@ class JobSelectionTests(unittest.TestCase):
         self.assertEqual(sent, 1)
         self.assertEqual(status, "sent")
         self.assertEqual(outside_window_events, 0)
+
+    def test_today_funnel_and_trend_use_the_same_hong_kong_date(self):
+        hong_kong_today = (datetime.now(UTC) + timedelta(hours=8)).date()
+        utc_timestamp = datetime.combine(hong_kong_today, time(0, 1)) - timedelta(hours=8)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = get_db(Path(tmp) / "bosshunter.db")
+            try:
+                insert_job(db, _job("hk-midnight"))
+                update_job_status(db, "hk-midnight", "sent")
+                db.execute(
+                    "UPDATE jobs SET created_at = ? WHERE id = ?",
+                    (utc_timestamp.strftime("%Y-%m-%d %H:%M:%S"), "hk-midnight"),
+                )
+                db.execute(
+                    "INSERT INTO history (job_id, action, created_at) VALUES (?, 'sent', ?)",
+                    ("hk-midnight", utc_timestamp.strftime("%Y-%m-%d %H:%M:%S")),
+                )
+                db.commit()
+
+                funnel = get_funnel_stats(db, today=True)
+                activity = get_daily_activity(db, days=1)
+            finally:
+                db.close()
+
+        self.assertEqual(funnel["采集总数"], 1)
+        self.assertEqual(activity[0]["day"], hong_kong_today.isoformat())
 
 
 if __name__ == "__main__":

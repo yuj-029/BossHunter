@@ -622,6 +622,43 @@ class WebApiRouteTests(unittest.TestCase):
             "exhausted": False,
         })
 
+    def test_web_api_daily_send_quota_uses_hong_kong_date(self):
+        hong_kong_today = (datetime.now(UTC) + timedelta(hours=8)).date()
+        utc_timestamp = datetime.combine(hong_kong_today, datetime.min.time()) - timedelta(hours=8) + timedelta(minutes=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("hk-sent"))
+                db.execute(
+                    "INSERT INTO history (job_id, action, created_at) VALUES (?, 'sent', ?)",
+                    ("hk-sent", utc_timestamp.strftime("%Y-%m-%d %H:%M:%S")),
+                )
+                db.commit()
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request("/api/workbench")
+
+        self.assertTrue(status.startswith("200"), body)
+        self.assertEqual(json.loads(body)["send_quota"]["sent"], 1)
+
+    def test_web_api_rejects_zero_scoring_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text("{}\n", encoding="utf-8")
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/config",
+                method="POST",
+                json_body={"scoring": {"threshold": 0}},
+            )
+
+        self.assertTrue(status.startswith("400"), body)
+        self.assertIn("评分门槛", json.loads(body)["error"])
+
     def test_web_api_workbench_shows_approved_job_when_greeting_was_interrupted(self):
         with tempfile.TemporaryDirectory() as tmp:
             base_dir = Path(tmp)
@@ -910,6 +947,140 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertTrue(confirmation_event.is_set())
         self.assertEqual(full_task.context["confirmed_job_ids"], ["ready-job"])
         self.assertEqual(json.loads(response_body)["id"], "full-task")
+
+    def test_web_api_deliver_is_blocked_when_automated_greeting_is_disabled(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({"delivery": {"automated_greeting_enabled": False}}),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/workbench/deliver",
+                method="POST",
+                json_body={"job_ids": ["ready-job"]},
+            )
+
+        self.assertTrue(status.startswith("410"), body)
+        self.assertIn("自动打招呼已取消", json.loads(body)["error"])
+
+    def test_web_api_manual_only_delivery_approves_without_starting_automation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({"delivery": {"automated_greeting_enabled": False}}),
+                encoding="utf-8",
+            )
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("manual-confirm-job"))
+                update_job_status(db, "manual-confirm-job", "ready")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            status, _, body = self._request(
+                "/api/workbench/deliver",
+                method="POST",
+                json_body={"job_ids": ["manual-confirm-job"], "manual_only": True},
+            )
+            workbench_status, _, workbench_body = self._request("/api/workbench")
+            verify_db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                row = verify_db.execute(
+                    "SELECT status FROM jobs WHERE id = ?",
+                    ("manual-confirm-job",),
+                ).fetchone()
+                history = verify_db.execute(
+                    "SELECT action, detail FROM history WHERE job_id = ?",
+                    ("manual-confirm-job",),
+                ).fetchall()
+            finally:
+                verify_db.close()
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertTrue(payload["manual_only"])
+        self.assertEqual(payload["approved_count"], 1)
+        self.assertEqual(row["status"], "approved")
+        self.assertEqual([item["action"] for item in history], ["approved"])
+        self.assertIn("等待用户手动沟通", history[0]["detail"])
+        self.assertTrue(workbench_status.startswith("200"), workbench_body)
+        self.assertEqual(json.loads(workbench_body)["pending_confirmation"], [])
+
+    def test_web_api_generates_greeting_draft_without_sending_or_changing_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            (base_dir / "config.yaml").write_text(
+                yaml.safe_dump({"delivery": {"automated_greeting_enabled": False}}),
+                encoding="utf-8",
+            )
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("greeting-draft-job"))
+                update_job_score(db, "greeting-draft-job", 86, "AI 产品经历与岗位匹配")
+                update_job_status(db, "greeting-draft-job", "ready")
+            finally:
+                db.close()
+            server.set_base_dir(base_dir)
+
+            with patch(
+                "bosshunter.ai.greeter.generate_greeting_draft",
+                return_value="我做过 AI 产品需求拆解与落地，和岗位强调的产品能力较匹配。如果合适，想进一步了解团队当前的重点方向。",
+            ):
+                status, _, body = self._request(
+                    "/api/jobs/greeting-draft-job/greeting/generate",
+                    method="POST",
+                )
+            workbench_status, _, workbench_body = self._request("/api/workbench")
+            verify_db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                row = verify_db.execute(
+                    "SELECT status, greeting FROM jobs WHERE id = ?",
+                    ("greeting-draft-job",),
+                ).fetchone()
+                history = verify_db.execute(
+                    "SELECT action, detail FROM history WHERE job_id = ?",
+                    ("greeting-draft-job",),
+                ).fetchall()
+            finally:
+                verify_db.close()
+
+        payload = json.loads(body)
+        self.assertTrue(status.startswith("200"), body)
+        self.assertFalse(payload["sent"])
+        self.assertEqual(row["status"], "ready")
+        self.assertEqual(row["greeting"], payload["greeting"])
+        self.assertEqual([item["action"] for item in history], ["greeting_generated"])
+        self.assertIn("未发送", history[0]["detail"])
+        self.assertTrue(workbench_status.startswith("200"), workbench_body)
+        self.assertEqual(
+            [job["id"] for job in json.loads(workbench_body)["pending_confirmation"]],
+            ["greeting-draft-job"],
+        )
+
+    def test_full_task_stops_after_collection_and_scoring_when_greeting_is_disabled(self):
+        calls = []
+        task = WorkbenchTask(id="collect-score-only", mode="full", label="采集并评分")
+
+        with patch.object(server, "_execute_collect", side_effect=lambda *_: calls.append("collect")), \
+             patch.object(server, "_execute_deliver", side_effect=lambda *_: calls.append("deliver")), \
+             patch.object(server, "_execute_monitor", side_effect=lambda *_args, **_kwargs: calls.append("monitor")):
+            server._execute_full(
+                task,
+                {
+                    "delivery": {"automated_greeting_enabled": False},
+                    "_collection_options": {},
+                },
+            )
+
+        self.assertEqual(calls, ["collect"])
+        self.assertIn(
+            "采集和 AI 评分已完成；自动打招呼已取消，合适岗位已进入待确认",
+            task.logs,
+        )
 
     def test_web_api_manual_sent_records_external_send_without_using_boss_quota(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -2086,6 +2257,81 @@ class WebApiRouteTests(unittest.TestCase):
         self.assertEqual(json.loads(body)["collection_only_platforms"], ["zhilian"])
         start.assert_not_called()
         write_config.assert_not_called()
+
+    def test_resume_generation_api_requires_jd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            resume_path = base_dir / "resume.md"
+            resume_path.write_text("# Resume", encoding="utf-8")
+            (base_dir / "config.yaml").write_text(
+                yaml.dump({"profile": {"resume_path": str(resume_path)}, "ai": {"api_key": "test-key"}}),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                job = _job("resume-missing-jd")
+                job["jd"] = ""
+                insert_job(db, job)
+            finally:
+                db.close()
+
+            status, _, body = self._request("/api/jobs/resume-missing-jd/resume/generate", method="POST")
+
+        self.assertTrue(status.startswith("400"))
+        self.assertEqual(json.loads(body)["error"], "岗位 JD 缺失，无法生成定制简历")
+
+    def test_resume_generation_api_starts_task_and_updates_current_project_job(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            base_dir = Path(tmp)
+            resume_path = base_dir / "resume.md"
+            resume_path.write_text("# Resume", encoding="utf-8")
+            (base_dir / "config.yaml").write_text(
+                yaml.dump({"profile": {"resume_path": str(resume_path)}, "ai": {"api_key": "test-key"}}),
+                encoding="utf-8",
+            )
+            server.set_base_dir(base_dir)
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                insert_job(db, _job("resume-success"))
+            finally:
+                db.close()
+
+            generated_path = base_dir / "data" / "resumes" / "generated.md"
+
+            def generate_resume(job_id, config):
+                self.assertEqual(config["_db_path"], str(base_dir / "data" / "bosshunter.db"))
+                generated_path.parent.mkdir(parents=True, exist_ok=True)
+                generated_path.write_text("# Tailored resume", encoding="utf-8")
+                database = get_db(Path(config["_db_path"]))
+                try:
+                    database.execute("UPDATE jobs SET resume_path = ? WHERE id = ?", (str(generated_path), job_id))
+                    database.commit()
+                finally:
+                    database.close()
+                return generated_path
+
+            with patch("bosshunter.ai.resume.generate_tailored_resume", side_effect=generate_resume):
+                status, _, body = self._request("/api/jobs/resume-success/resume/generate", method="POST")
+                self.assertTrue(status.startswith("202"), body)
+                task_id = json.loads(body)["id"]
+                for _ in range(30):
+                    task_status, _, task_body = self._request("/api/jobs/resume-success/resume/task")
+                    task = json.loads(task_body)["task"]
+                    if task and task["id"] == task_id and task["status"] in {"completed", "failed"}:
+                        break
+                    time.sleep(0.02)
+                else:
+                    self.fail("resume task did not finish")
+
+            self.assertTrue(task_status.startswith("200"))
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["progress"]["resume_path"], str(generated_path))
+            db = get_db(base_dir / "data" / "bosshunter.db")
+            try:
+                self.assertEqual(db.execute("SELECT resume_path FROM jobs WHERE id = ?", ("resume-success",)).fetchone()[0], str(generated_path))
+            finally:
+                db.close()
 
 
 if __name__ == "__main__":

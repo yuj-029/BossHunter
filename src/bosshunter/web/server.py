@@ -25,7 +25,12 @@ from bottle import Bottle, request, response, static_file, abort
 from bosshunter import __version__
 from bosshunter.ai.credentials import get_ai_api_key
 from bosshunter.cities import CityRefreshError, get_city_map, load_city_snapshot, refresh_city_cache
-from bosshunter.config import AI_SERVICE_PRESETS, load_config, remove_retired_collection_settings
+from bosshunter.config import (
+	AI_SERVICE_PRESETS,
+	load_config,
+	remove_retired_collection_settings,
+	validate_scoring_threshold,
+)
 from bosshunter.db import (
 	JobDeletionConflictError,
 	JobManualSentConflictError,
@@ -48,6 +53,7 @@ from bosshunter.db import (
 	query_jobs,
 	restore_jobs,
 	soft_delete_jobs,
+	update_job_greeting,
 	update_job_status,
 )
 from bosshunter.collection.capabilities import platform_supports
@@ -86,6 +92,7 @@ mimetypes.add_type("text/css", ".css", strict=True)
 
 app = Bottle()
 task_runner = WorkbenchTaskRunner()
+resume_task_runner = WorkbenchTaskRunner()
 job_mutation_lock = Lock()
 
 
@@ -232,7 +239,7 @@ def _sanitize_config_for_write(data):
 	ai_cfg.pop("auth_token_masked", None)
 	ai_cfg.pop("has_auth_token", None)
 
-	existing_ai = load_config(CONFIG_PATH).get("ai", {})
+	existing_ai = load_config(CONFIG_PATH, validate_scoring=False).get("ai", {})
 	service = ai_cfg.get("service") or existing_ai.get("service")
 	if service not in AI_SERVICE_PRESETS:
 		provider = ai_cfg.get("provider") or existing_ai.get("provider") or "anthropic"
@@ -561,20 +568,25 @@ def _execute_monitor(task: WorkbenchTask, config: dict, *, initial_cooldown: boo
 		task.context.pop("monitor_queue_lock", None)
 
 
+def _automated_greeting_enabled(config: dict) -> bool:
+	return config.get("delivery", {}).get("automated_greeting_enabled", True) is not False
+
+
 def _execute_full(task: WorkbenchTask, config: dict) -> None:
-	db = _get_web_db()
-	try:
-		deferred_job_ids = [str(job["id"]) for job in get_jobs_ready_to_send(db)]
-	finally:
-		db.close()
-	if deferred_job_ids:
-		_log(task, f"优先续发上次已确认但未完成的 {len(deferred_job_ids)} 个岗位")
-		deferred_config = load_config(CONFIG_PATH)
-		deferred_config["_workbench_job_ids"] = deferred_job_ids
-		deferred_config["_workbench_skip_greeting"] = True
-		_execute_deliver(task, deferred_config)
-		if task.stop_requested.is_set():
-			return
+	if _automated_greeting_enabled(config):
+		db = _get_web_db()
+		try:
+			deferred_job_ids = [str(job["id"]) for job in get_jobs_ready_to_send(db)]
+		finally:
+			db.close()
+		if deferred_job_ids:
+			_log(task, f"优先续发上次已确认但未完成的 {len(deferred_job_ids)} 个岗位")
+			deferred_config = load_config(CONFIG_PATH)
+			deferred_config["_workbench_job_ids"] = deferred_job_ids
+			deferred_config["_workbench_skip_greeting"] = True
+			_execute_deliver(task, deferred_config)
+			if task.stop_requested.is_set():
+				return
 
 	full_collection_config = dict(config)
 	try:
@@ -593,6 +605,9 @@ def _execute_full(task: WorkbenchTask, config: dict) -> None:
 		full_collection_config.pop("_collection_options", None)
 	_execute_collect(task, full_collection_config)
 	if task.stop_requested.is_set():
+		return
+	if not _automated_greeting_enabled(config):
+		_log(task, "采集和 AI 评分已完成；自动打招呼已取消，合适岗位已进入待确认")
 		return
 
 	db = _get_web_db()
@@ -777,6 +792,8 @@ def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 	from bosshunter.executor.sender import send_greetings
 
 	config = dict(config)
+	if not _automated_greeting_enabled(config):
+		raise RuntimeError("自动打招呼已取消；BossHunter 不会生成或发送消息")
 	config["_workbench_stop_event"] = task.stop_requested
 	config["_workbench_log"] = lambda message: _log(task, message)
 	selected_job_ids = [str(job_id) for job_id in config.get("_workbench_job_ids", []) if str(job_id)]
@@ -838,6 +855,47 @@ def _execute_deliver_batch(task: WorkbenchTask, config: dict) -> None:
 		raise RuntimeError(f"发送已安全暂停：检测到{reason_labels[stop_reason]}")
 
 
+def _execute_resume(task: WorkbenchTask, config: dict) -> None:
+	"""Generate one job's tailored resume without blocking collection/scoring work."""
+	from bosshunter.ai.resume import generate_tailored_resume, get_last_resume_failure_reason
+
+	job_id = str(config.get("_resume_job_id") or "")
+	if not job_id:
+		raise ValueError("缺少要生成简历的岗位")
+
+	profile = deepcopy(config.get("profile", {}))
+	resume_path = Path(str(profile.get("resume_path") or ""))
+	if resume_path and not resume_path.is_absolute():
+		resume_path = BASE_DIR / resume_path
+	output_dir = Path(str(profile.get("resume_output_dir") or RESUME_DIR))
+	if not output_dir.is_absolute():
+		output_dir = BASE_DIR / output_dir
+
+	resume_config = dict(config)
+	resume_config["profile"] = {
+		**profile,
+		"resume_path": str(resume_path),
+		"resume_output_dir": str(output_dir),
+	}
+	resume_config["_db_path"] = str(DATA_DIR / "bosshunter.db")
+	resume_config["_workbench_stop_event"] = task.stop_requested
+	task.progress = {"job_id": job_id, "stage": "generating"}
+	_log(task, "开始生成定制简历")
+	generated_path = generate_tailored_resume(job_id, resume_config)
+	if not generated_path:
+		raise RuntimeError(get_last_resume_failure_reason(job_id) or "AI 未返回可用的定制简历")
+
+	db = _get_web_db()
+	try:
+		add_history(db, job_id, "resume_generated", "Web Dashboard AI 生成定制简历；未发送")
+	finally:
+		db.close()
+	path = Path(generated_path)
+	task.metrics["generated"] = 1
+	task.progress = {"job_id": job_id, "stage": "completed", "resume_path": str(path)}
+	_log(task, f"定制简历已生成：{path.name}")
+
+
 task_runner._executors.update({
 	"full": _execute_full,
 	"collect": _execute_collect,
@@ -846,6 +904,7 @@ task_runner._executors.update({
 	"monitor": _execute_monitor,
 	"deliver": _execute_deliver,
 })
+resume_task_runner._executors["resume"] = _execute_resume
 
 
 # ─── Health ───────────────────────────────────────────────
@@ -1087,20 +1146,26 @@ def api_workbench():
 	db = _get_web_db()
 	try:
 		config = load_config(CONFIG_PATH)
+		automated_greeting_enabled = _automated_greeting_enabled(config)
+		pending_confirmation = get_jobs_pending_confirmation(db)
+		if not automated_greeting_enabled:
+			pending_confirmation.extend(get_jobs_ready_to_send(db))
 		threshold = config.get("scoring", {}).get("threshold", 60)
 		daily_limit = int(config.get("throttle", {}).get("daily_limit", 30) or 30)
 		today_sent_row = db.execute(
-			"SELECT COUNT(*) AS cnt FROM history WHERE action='sent' AND date(created_at)=date('now')"
+			"SELECT COUNT(*) AS cnt FROM history WHERE action='sent' AND date(created_at, '+8 hours')=date('now', '+8 hours')"
 		).fetchone()
 		today_sent = int(today_sent_row["cnt"] if today_sent_row else 0)
 		status = task_runner.status()
 		return _json_response({
+			"automated_greeting_enabled": automated_greeting_enabled,
 			"funnel": get_funnel_stats(db),
 			"funnel_today": get_funnel_stats(db, today=True),
 			"pending_confirmation": [
-				job for job in get_jobs_pending_confirmation(db)
+				job for job in pending_confirmation
 				if int(job.get("score") or 0) >= threshold
 				and platform_supports(str(job.get("source_platform") or "boss"), "deliver")
+				and (automated_greeting_enabled or str(job.get("status") or "") == "ready")
 			],
 			"pending_greetings": [
 				job for job in get_jobs_ready_to_send(db)
@@ -1233,7 +1298,7 @@ def api_scoring_start():
 
 @app.route("/api/scoring/runs")
 def api_scoring_runs():
-	return _json_response(list_scoring_runs(DATA_DIR / "bosshunter.db"))
+	return _json_response(list_scoring_runs(DATA_DIR / "bosshunter.db", limit=100))
 
 
 @app.route("/api/scoring/runs/<run_id>/pause", method="POST")
@@ -1409,10 +1474,15 @@ def api_workbench_task_stop(task_id):
 def api_workbench_deliver():
 	try:
 		body = request.json or {}
+		manual_only = bool(body.get("manual_only"))
+		if not _automated_greeting_enabled(load_config(CONFIG_PATH)) and not manual_only:
+			return _json_response({"error": "自动打招呼已取消；请打开岗位链接后手动沟通"}, 410)
 		job_ids = [str(job_id) for job_id in body.get("job_ids", []) if str(job_id)]
 		if not job_ids:
 			return _json_response({"error": "请选择要投递的岗位"}, 400)
 		direct_send = bool(body.get("direct_send"))
+		if manual_only and direct_send:
+			return _json_response({"error": "人工确认投递不能同时请求自动发送"}, 400)
 		validation_db = _get_web_db()
 		try:
 			placeholders = ",".join("?" for _ in job_ids)
@@ -1488,6 +1558,31 @@ def api_workbench_deliver():
 			raise TaskAlreadyRunningError(
 				f"当前已有后台任务「{active_task.get('label', '未知任务')}」正在运行或停止中，请等待其完全结束"
 			)
+
+		if manual_only:
+			ready_ids = [
+				str(row["id"])
+				for row in platform_rows
+				if str(row["status"] or "") == "ready"
+			]
+			db = _get_web_db()
+			try:
+				for job_id in ready_ids:
+					update_job_status(db, job_id, "approved")
+					add_history(
+						db,
+						job_id,
+						"approved",
+						"Web Dashboard 一键确认投递；自动打招呼关闭，等待用户手动沟通",
+					)
+			finally:
+				db.close()
+			return _json_response({
+				"manual_only": True,
+				"approved_count": len(ready_ids),
+				"already_approved_count": len(job_ids) - len(ready_ids),
+				"job_ids": job_ids,
+			})
 
 		queued_payload = None
 		status_job_ids = job_ids
@@ -1580,6 +1675,88 @@ def api_job_detail(job_id):
 		return _json_response(dict(row))
 	finally:
 		db.close()
+
+
+def _resume_task_for_job(job_id: str) -> dict | None:
+	"""Return the latest resume-generation task for this job."""
+	matching_tasks = [
+		task for task in resume_task_runner.status()["tasks"]
+		if str(task.get("progress", {}).get("job_id") or "") == str(job_id)
+	]
+	return matching_tasks[-1] if matching_tasks else None
+
+
+@app.route("/api/jobs/<job_id>/resume/generate", method="POST")
+def api_job_generate_resume(job_id):
+	config = _task_config()
+	db = _get_web_db()
+	try:
+		row = db.execute(
+			"SELECT jd FROM jobs WHERE id = ? AND deleted_at IS NULL",
+			(job_id,),
+		).fetchone()
+	finally:
+		db.close()
+	if not row:
+		return _json_response({"error": "岗位不存在或已进入回收站"}, 404)
+	if not str(row["jd"] or "").strip():
+		return _json_response({"error": "岗位 JD 缺失，无法生成定制简历"}, 400)
+
+	profile = config.get("profile", {}) if isinstance(config.get("profile"), dict) else {}
+	resume_path = Path(str(profile.get("resume_path") or ""))
+	if not resume_path.is_absolute():
+		resume_path = BASE_DIR / resume_path
+	if not profile.get("resume_path") or not resume_path.exists():
+		return _json_response({"error": "请先在配置页上传基础简历后再生成"}, 400)
+	if not get_ai_api_key(config):
+		return _json_response({"error": "请先在配置页填写当前 AI 服务的 API Key"}, 400)
+
+	try:
+		task = resume_task_runner.start("resume", _task_config({"_resume_job_id": job_id}))
+		task["job_id"] = job_id
+		return _json_response(task, 202)
+	except TaskAlreadyRunningError as exc:
+		return _json_response({"error": str(exc)}, 409)
+
+
+@app.route("/api/jobs/<job_id>/resume/task")
+def api_job_resume_task(job_id):
+	return _json_response({"task": _resume_task_for_job(job_id)})
+
+
+@app.route("/api/jobs/<job_id>/greeting/generate", method="POST")
+def api_job_generate_greeting(job_id):
+	try:
+		db = _get_web_db()
+		try:
+			row = db.execute(
+				"SELECT * FROM jobs WHERE id = ? AND deleted_at IS NULL",
+				(job_id,),
+			).fetchone()
+			if not row:
+				return _json_response({"error": "岗位不存在或已进入回收站"}, 404)
+			job = dict(row)
+		finally:
+			db.close()
+
+		from bosshunter.ai.greeter import generate_greeting_draft
+
+		greeting = generate_greeting_draft(job, load_config(CONFIG_PATH))
+		if not greeting:
+			return _json_response({"error": "AI 未返回可用的定制招呼语，请稍后重试"}, 502)
+
+		db = _get_web_db()
+		try:
+			update_job_greeting(db, job_id, greeting)
+			add_history(db, job_id, "greeting_generated", "Web Dashboard 生成定制招呼语草稿；未发送")
+		finally:
+			db.close()
+		return _json_response({"job_id": job_id, "greeting": greeting, "sent": False})
+	except ValueError as exc:
+		return _json_response({"error": str(exc)}, 400)
+	except Exception as exc:
+		user_message = getattr(exc, "user_message", "")
+		return _json_response({"error": user_message or str(exc) or "生成定制招呼语失败"}, 502)
 
 
 @app.route("/api/jobs/<job_id>/mark-resume-sent", method="POST")
@@ -1689,7 +1866,12 @@ def api_history_dismiss(history_id):
 @app.route("/api/config")
 def api_config_get():
 	try:
-		config = _redact_config_for_response(load_config(CONFIG_PATH))
+		config = load_config(CONFIG_PATH, validate_scoring=False)
+		try:
+			config["scoring"]["threshold"] = validate_scoring_threshold(config)
+		except ValueError as exc:
+			config["error"] = str(exc)
+		config = _redact_config_for_response(config)
 		return _json_response(config)
 	except Exception as e:
 		return _json_response({"error": str(e)}, 500)
@@ -1704,6 +1886,12 @@ def api_config_post():
 			return _json_response({"error": "Empty body"}, 400)
 		if not isinstance(data, dict):
 			return _json_response({"error": "Config body must be an object"}, 400)
+		try:
+			threshold = validate_scoring_threshold(data)
+		except ValueError as exc:
+			return _json_response({"error": str(exc)}, 400)
+		if isinstance(data.get("scoring"), dict) and "threshold" in data["scoring"]:
+			data["scoring"]["threshold"] = threshold
 		data = _sanitize_config_for_write(data)
 
 		# Basic validation

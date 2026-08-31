@@ -399,7 +399,12 @@ def resolve_anthropic_model(model: str, config: dict) -> str:
         headers["x-api-key"] = api_key
 
     try:
-        response = httpx.get(f"{base_url.rstrip('/')}/v1/models", headers=headers, timeout=10)
+        response = httpx.get(
+            f"{base_url.rstrip('/')}/v1/models",
+            headers=headers,
+            timeout=10,
+            trust_env=False,
+        )
         response.raise_for_status()
         model_ids = [item.get("id", "") for item in response.json().get("data", [])]
     except Exception:
@@ -439,7 +444,23 @@ def call_anthropic_text(
         return None
 
     model = resolve_anthropic_model(ai_cfg.get("model", "claude-sonnet-4-6"), config)
-    client = anthropic.Anthropic(**build_anthropic_client_kwargs(config))
+    client_kwargs = build_anthropic_client_kwargs(config)
+    try:
+        client = anthropic.Anthropic(**client_kwargs)
+    except Exception as exc:
+        # Some desktop launchers inject an IPv6 NO_PROXY entry that older
+        # httpx/httpx2 URL parsers reject before any request is made. Retry the
+        # client without inherited proxy settings; API settings stay unchanged.
+        if "invalid port" not in str(exc).lower():
+            raise normalize_ai_error(exc) from exc
+        try:
+            import httpx2
+        except ImportError:
+            raise normalize_ai_error(exc) from exc
+        client = anthropic.Anthropic(
+            **client_kwargs,
+            http_client=httpx2.Client(trust_env=False),
+        )
     mode, budget = resolve_thinking_options(config, purpose)
     strategies = _thinking_strategies(mode, budget, max_tokens)
     thinking_rejected = False
@@ -512,10 +533,11 @@ def call_openai_compatible_text(
         }
         try:
             response = httpx.post(
-                f"{base_url.rstrip('/')}/chat/completions",
+                _chat_completions_url(base_url),
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json=payload,
                 timeout=request_timeout,
+                trust_env=False,
             )
             response.raise_for_status()
         except Exception as exc:
@@ -556,6 +578,14 @@ def get_openai_compatible_model(config: dict) -> str:
     ai_cfg = config.get("ai", {}) if isinstance(config, dict) else {}
     model = str(ai_cfg.get("model") or "").strip()
     return model.lower() if get_ai_service(config) == "deepseek" else model
+
+
+def _chat_completions_url(base_url: str) -> str:
+    """Accept either an API root or a complete Chat Completions endpoint."""
+    normalized = str(base_url or "").rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+    return f"{normalized}/chat/completions"
 
 
 def _match_model_name(requested: str, available: list[str]) -> str | None:

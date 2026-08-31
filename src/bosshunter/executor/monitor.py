@@ -790,6 +790,8 @@ def _open_conversation(job: dict, config: dict) -> str | None:
       C) Chat list → match by company name only (fallback when hr_name is empty)
     Each strategy retries once on failure.
     """
+    if str(job.get("source_platform") or "boss").strip().lower() != "boss":
+        return None
     if stop_requested(config):
         return None
     job_url = job.get("url", "")
@@ -892,8 +894,8 @@ def _open_conversation_from_chat_list(job: dict, config: dict) -> str | None:
             const name = (nameEl ? nameEl.textContent : '').trim();
             const comp = spans.length >= 2 ? spans[1].textContent.trim() : '';
 
-            const hrName = '{hr_name}';
-            const targetComp = '{company}';
+            const hrName = {json.dumps(hr_name)};
+            const targetComp = {json.dumps(company)};
 
             // Exact match: HR name + company
             if (hrName && name === hrName && (comp.includes(targetComp) || targetComp.includes(comp))) {{
@@ -1635,7 +1637,10 @@ def _check_follow_ups(config: dict, throttle, replied_job_ids: set | None = None
     interval_hours = follow_up_cfg.get("interval_hours", 48)
 
     db = get_db()
-    sent_jobs = get_jobs_by_status(db, "sent")
+    sent_jobs = [
+        job for job in get_jobs_by_status(db, "sent")
+        if str(job.get("source_platform") or "boss").strip().lower() == "boss"
+    ]
 
     if not sent_jobs:
         db.close()

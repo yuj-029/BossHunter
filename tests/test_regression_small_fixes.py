@@ -57,10 +57,10 @@ class VersionMetadataTests(unittest.TestCase):
             / "Sidebar.tsx"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('version = "2.3.1"', pyproject)
-        self.assertEqual(bosshunter.__version__, "2.3.1")
-        self.assertEqual(json.loads(health())["version"], "2.3.1")
-        self.assertIn("v2.3.1 · 本地控制台", sidebar_source)
+        self.assertIn('version = "2.3.2"', pyproject)
+        self.assertEqual(bosshunter.__version__, "2.3.2")
+        self.assertEqual(json.loads(health())["version"], "2.3.2")
+        self.assertIn("v2.3.2 · 本地控制台", sidebar_source)
         self.assertNotIn("v1.1.0", sidebar_source)
 
 
@@ -712,7 +712,7 @@ class ConfigPageTests(unittest.TestCase):
         self.assertIn("!configRes.ok", self.hook_source)
         self.assertIn("!schemaRes.ok", self.hook_source)
         self.assertIn("配置加载失败", self.source)
-        self.assertIn("请确认后端服务已启动", self.source)
+        self.assertIn("请确认 BossHunter 后端服务已启动", self.source)
         self.assertIn("error", self.source)
 
     def test_follow_up_switch_defaults_to_off_when_config_field_is_missing(self):

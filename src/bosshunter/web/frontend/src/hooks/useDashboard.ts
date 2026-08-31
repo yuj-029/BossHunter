@@ -92,6 +92,7 @@ export interface CollectionProgress {
 }
 
 interface WorkbenchData {
+  automated_greeting_enabled: boolean
   funnel: FunnelData
   funnel_today: FunnelData
   pending_confirmation: Job[]
@@ -128,6 +129,7 @@ interface HistoryItem {
 }
 
 const emptyWorkbench: WorkbenchData = {
+  automated_greeting_enabled: false,
   funnel: {},
   funnel_today: {},
   pending_confirmation: [],

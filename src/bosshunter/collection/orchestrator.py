@@ -171,8 +171,9 @@ def validate_collection_options(options: dict[str, Any]) -> dict[str, Any]:
             max_pages = int(value.get("max_pages", 3))
         except (TypeError, ValueError) as exc:
             raise ValueError(f"{platform} 最大页数必须是整数") from exc
-        if not 1 <= max_pages <= 10:
-            raise ValueError(f"{platform} 最大页数范围为 1-10")
+        max_page_limit = 50 if platform == "51job" else 10
+        if not 1 <= max_pages <= max_page_limit:
+            raise ValueError(f"{platform} 最大页数范围为 1-{max_page_limit}")
         sort = str(value.get("sort") or "default").strip()
         if sort not in SORT_OPTIONS[platform]:
             raise ValueError(f"{platform} 排序方式无效")

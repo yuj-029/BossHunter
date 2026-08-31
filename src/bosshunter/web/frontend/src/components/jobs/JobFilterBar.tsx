@@ -29,7 +29,7 @@ export function JobFilterBar({
   const update = (key: keyof JobFilters, value: string) => onChange({ ...filters, [key]: value })
 
   return (
-    <div className="mb-4 rounded-2xl border border-card-border bg-[#FFFCFA] p-3">
+    <div className="rounded-2xl border border-card-border bg-surface-subtle p-3">
       <div className="grid min-w-0 grid-cols-1 gap-2 md:grid-cols-2 2xl:grid-cols-4">
         <label className="relative min-w-0 md:col-span-2 2xl:col-span-1">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-muted" />
@@ -104,7 +104,7 @@ export function JobFilterBar({
           <option value="experienced">社招</option>
           <option value="unknown">未识别</option>
         </Select>
-        <div className="flex min-h-9 min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-card-border bg-white px-3 py-1">
+        <div className="flex min-h-9 min-w-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-card-border bg-white px-3 py-1">
           <span className="whitespace-nowrap text-xs font-bold text-muted">筛选结果 {resultCount} / 总数 {totalCount}</span>
           <Button
             type="button"

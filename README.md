@@ -10,13 +10,13 @@
   <strong>由 <a href="https://github.com/powerycy/shengjidaguai">升级打怪开源社区</a> 维护</strong> · 欢迎参与交流与共建
 </p>
 
-# BossHunter v2.3.1
+# BossHunter v2.3.2
 
 > 某直聘智能求职 Agent — 从岗位采集、AI 评分到人工确认投递、回复监测与定制简历生成的本地自动化流水线
 
 <p align="center">
   <a href="https://github.com/powerycy/BossHunter/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/powerycy/BossHunter?style=social"></a>
-  <a href="https://github.com/powerycy/BossHunter"><img alt="Version" src="https://img.shields.io/badge/version-v2.3.1-FB6511"></a>
+  <a href="https://github.com/powerycy/BossHunter"><img alt="Version" src="https://img.shields.io/badge/version-v2.3.2-FB6511"></a>
   <a href="https://www.python.org/"><img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white"></a>
   <a href="LICENSE"><img alt="Non-Commercial License" src="https://img.shields.io/badge/license-Non--Commercial-6f42c1"></a>
   <a href="https://github.com/powerycy/BossHunter/issues"><img alt="GitHub Issues" src="https://img.shields.io/github/issues/powerycy/BossHunter"></a>
@@ -295,6 +295,7 @@ bosshunter status --full        # 完整仪表盘
 - 其他 OpenAI 兼容接口：填写服务商提供的 Base URL 和模型 ID；可通过 `OPENAI_API_KEY` 提供 Key。
 - 安装 AI 只检测标准环境变量是否存在，不读取或输出 Codex、Claude Code、ChatGPT 等工具自身的登录凭证。
 - 可运行 `bosshunter ai-status` 安全验证当前配置，命令不会显示完整 Key。
+- 评分连接、批量失败恢复和 Windows 端口冲突处理见 [AI 评分故障排查与恢复](docs/ai-scoring-runbook.md)。
 - 公开仓库不包含任何真实 API Key、内部域名或个人配置。
 
 ---
@@ -310,7 +311,7 @@ BossHunter/
 ├── pyproject.toml        # Python 包定义
 ├── .gitignore            # 安全排除规则
 ├── resume.example.md     # 简历模板示例
-├── docs/demo/            # 产品截图与演示视频
+├── docs/                 # 故障知识库、平台采集说明与产品演示
 ├── src/
 │   └── bosshunter/       # 核心源码
 │       ├── main.py       # CLI 入口
@@ -369,6 +370,7 @@ A: 项目通过 CDP (Chrome DevTools Protocol) 直连你日常使用的浏览器
 
 | 日期 | 版本号 | 类型 | 更新内容 |
 |------|--------|------|----------|
+| 2026-08-31 | v2.3.2 | 兼容修复 | 修复外部平台自动处理边界、特殊字符安全、筛选导出、服务状态和香港日期统计，并移除休息日概率配置。 |
 | 2026-08-25 | v2.3.1 | 多平台与安全整合 | 合入智联/51job 只读采集、外部平台人工投递闭环、岗位池与筛选增强、Windows 兼容、招呼语与消息判定修复，并重整 BOSS 页面访问保护设置。 |
 | 2026-08-13 | v2.3.0 | 功能与可恢复性 | 增加多范围岗位导出、离线城市目录、任务安全的岗位回收站和可独立重试的 AI 评分；同步改进配置安全、岗位筛选与投递队列。 |
 | 2026-08-02 | v2.2.0 | 功能与稳定性 | 单岗位失败不再中断全流程；额度未完成岗位下次优先续发；加强首次沟通、历史会话、任务停止、后台页面与最新配置生效逻辑，并简化工作台。 |

@@ -29,6 +29,64 @@ def _job(job_id: str, hr_name: str | None = None) -> dict:
 
 
 class MonitorThrottleTests(unittest.TestCase):
+    def test_external_platform_never_opens_a_boss_conversation(self):
+        from bosshunter.executor import monitor
+
+        job = _job("51job-manual")
+        job["source_platform"] = "51job"
+        with patch.object(monitor, "_open_monitor_tab") as open_tab:
+            self.assertIsNone(monitor._open_conversation(job, {}))
+        open_tab.assert_not_called()
+
+    def test_external_manual_sent_job_is_excluded_from_follow_up(self):
+        from bosshunter.executor import monitor
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "bosshunter.db"
+            db = get_db(db_path)
+            try:
+                job = _job("51job-follow-up")
+                job["source_platform"] = "51job"
+                insert_job(db, job)
+                update_job_status(db, job["id"], "sent")
+                db.execute("UPDATE jobs SET updated_at = datetime('now', '-3 days') WHERE id = ?", (job["id"],))
+                db.commit()
+            finally:
+                db.close()
+
+            with patch("bosshunter.db.DB_PATH", db_path), \
+                 patch.object(monitor, "_open_conversation") as open_conversation:
+                count = monitor._check_follow_ups(
+                    {"follow_up": {"enabled": True, "interval_hours": 1, "skip_weekends": False}},
+                    None,
+                )
+
+        self.assertEqual(count, 0)
+        open_conversation.assert_not_called()
+
+    def test_chat_match_values_are_json_encoded(self):
+        from bosshunter.executor import monitor
+
+        job = _job("special", "HR'\\\";window.injected=true;//")
+        job["company"] = "Company'\\\";window.injected=true;//"
+        scripts = []
+
+        def evaluate(_target_id, script):
+            scripts.append(script)
+            return json.dumps({"success": False})
+
+        with patch.object(monitor, "_open_monitor_tab", return_value="chat"), \
+             patch.object(monitor, "_wait_or_stop", return_value=False), \
+             patch.object(monitor, "_wait_for_page_or_stop", return_value=True), \
+             patch.object(monitor, "_inspect_monitor_page"), \
+             patch.object(monitor, "evaluate", side_effect=evaluate), \
+             patch.object(monitor, "close_tab"):
+            monitor._open_conversation_from_chat_list(job, {})
+
+        matching_script = next(script for script in scripts if "const hrName" in script)
+        self.assertIn(json.dumps(job["hr_name"]), matching_script)
+        self.assertIn(json.dumps(job["company"]), matching_script)
+
     def test_boss_operation_multiplier_applies_to_monitor_cycle_wait(self):
         from bosshunter.executor import monitor
 

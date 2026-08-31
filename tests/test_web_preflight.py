@@ -3,6 +3,7 @@ from unittest.mock import Mock, patch
 
 import httpx
 
+from bosshunter.ai.credentials import AIRequestError
 from bosshunter.web.preflight import check_ai_connection, check_browser_connection, collect_preflight_checks
 
 
@@ -25,8 +26,9 @@ class AiPreflightTests(unittest.TestCase):
 		self.assertIn("API Key 验证失败", checks[0]["message"])
 		self.assertNotIn("secret-key", str(checks))
 
+	@patch("bosshunter.web.preflight.call_anthropic_text", return_value="OK")
 	@patch("bosshunter.web.preflight.httpx.get")
-	def test_valid_api_connection_returns_pass(self, http_get):
+	def test_valid_api_connection_returns_pass(self, http_get, message_call):
 		http_get.return_value = Mock(status_code=200)
 		config = {"ai": {"api_key": "secret-key", "model": "claude-sonnet-4-6"}}
 
@@ -35,6 +37,34 @@ class AiPreflightTests(unittest.TestCase):
 		self.assertEqual(checks[0]["status"], "pass")
 		self.assertIn("连接正常", checks[0]["message"])
 		http_get.assert_called_once()
+		self.assertIs(http_get.call_args.kwargs["trust_env"], False)
+		message_call.assert_called_once()
+
+	@patch("bosshunter.web.preflight.call_anthropic_text", return_value="OK")
+	@patch("bosshunter.web.preflight.httpx.get")
+	def test_missing_model_list_falls_back_to_real_message_probe(self, http_get, message_call):
+		http_get.return_value = Mock(status_code=404)
+		config = {"ai": {"api_key": "secret-key", "model": "claude-sonnet-4-6"}}
+
+		checks = check_ai_connection(config, required=True)
+
+		self.assertEqual(checks[0]["status"], "pass")
+		self.assertIn("真实消息接口", checks[0]["detail"])
+		message_call.assert_called_once()
+
+	@patch(
+		"bosshunter.web.preflight.call_anthropic_text",
+		side_effect=[AIRequestError("network", "AI 服务连接失败或超时"), "OK"],
+	)
+	@patch("bosshunter.web.preflight.httpx.get")
+	def test_real_message_probe_retries_one_transient_network_failure(self, http_get, message_call):
+		http_get.return_value = Mock(status_code=404)
+		config = {"ai": {"api_key": "secret-key", "model": "claude-sonnet-4-6"}}
+
+		checks = check_ai_connection(config, required=True)
+
+		self.assertEqual(checks[0]["status"], "pass")
+		self.assertEqual(message_call.call_count, 2)
 
 	def test_openai_compatible_provider_requires_base_url(self):
 		config = {

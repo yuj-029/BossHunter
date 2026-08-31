@@ -139,7 +139,6 @@ DEFAULTS: dict[str, Any] = {
         "browse_duration_min": 15,
         "browse_duration_max": 30,
         "send_windows": ["09:00-16:00"],
-        "day_off_probability": 0.05,
     },
     "ai": {
         "provider": "anthropic",
@@ -191,7 +190,11 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
-def load_config(config_path: Path | None = None) -> dict[str, Any]:
+def load_config(
+    config_path: Path | None = None,
+    *,
+    validate_scoring: bool = True,
+) -> dict[str, Any]:
     """Load configuration from YAML file, falling back to defaults."""
     cfg = _deep_copy_dict(DEFAULTS)
     if config_path is None:
@@ -202,6 +205,8 @@ def load_config(config_path: Path | None = None) -> dict[str, Any]:
         if isinstance(user_cfg, dict):
             _deep_merge(cfg, user_cfg)
     _normalize_config_sections(cfg)
+    if validate_scoring:
+        cfg["scoring"]["threshold"] = validate_scoring_threshold(cfg)
     _validate_ai_provider(cfg)
     return cfg
 
@@ -215,12 +220,29 @@ def _normalize_config_sections(config: dict[str, Any]) -> dict[str, Any]:
     return remove_retired_collection_settings(config)
 
 
+def validate_scoring_threshold(config: dict[str, Any]) -> int:
+    """Return a scoring threshold in the supported 1-100 range."""
+    value = config.get("scoring", {}).get("threshold", DEFAULTS["scoring"]["threshold"])
+    if isinstance(value, bool):
+        raise ValueError("评分门槛必须是 1 到 100 的整数")
+    try:
+        threshold = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("评分门槛必须是 1 到 100 的整数") from exc
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("评分门槛必须是 1 到 100 的整数")
+    if not 1 <= threshold <= 100:
+        raise ValueError("评分门槛最低为 1，最高为 100")
+    return threshold
+
+
 def remove_retired_collection_settings(config: dict[str, Any]) -> dict[str, Any]:
     """Remove collection-count settings that are no longer supported."""
 
     # These settings existed briefly, but a result-count limit is not a page-access
     # safety control. Ignore stale values so old config files cannot re-enable it or
     # make the removed fields reappear in the Web UI/API.
+    config.get("throttle", {}).pop("day_off_probability", None)
     collection = config.get("collection", {})
     collection.pop("daily_new_jobs_limit", None)
     collection.pop("default_target_count", None)
