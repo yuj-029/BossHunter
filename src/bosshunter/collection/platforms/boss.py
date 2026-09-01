@@ -202,6 +202,9 @@ class BossCollector:
         guard = PlatformAccessGuard(self.safety_conn, self.config, "collection", "boss") if self.safety_conn is not None else None
         search_limit = _positive_int(collection_cfg.get("daily_search_page_limit", 30), 30)
         detail_limit = _positive_int(collection_cfg.get("daily_detail_page_limit", 150), 150)
+        empty_eligible_page_limit = _positive_int(
+            collection_cfg.get("consecutive_empty_eligible_pages", 2), 2
+        )
         failure_limit = _positive_int(collection_cfg.get("max_consecutive_page_failures", 3), 3)
         risk_pause_min = _positive_int(collection_cfg.get("risk_pause_min_minutes", 5), 5)
         risk_pause_max = max(
@@ -300,6 +303,7 @@ class BossCollector:
 
         try:
             for city, city_code, keyword in combos:
+                empty_eligible_pages = 0
                 if hooks.stop_event is not None and hooks.stop_event.is_set():
                     return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                 for page in range(1, request.max_pages + 1):
@@ -343,6 +347,7 @@ class BossCollector:
                         continue
                     page_failures = 0
                     if not jobs: break
+                    eligible_on_page = 0
                     for raw in jobs:
                         if hooks.stop_event is not None and hooks.stop_event.is_set():
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
@@ -351,6 +356,7 @@ class BossCollector:
                         if self.config and quick_score(raw if isinstance(raw, dict) else {}, self.config)[0] <= 0:
                             hooks.on_event(message="BOSS 列表预筛不通过", increment_filtered=True)
                             continue
+                        eligible_on_page += 1
                         if throttle.wait(hooks.stop_event):
                             return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
                         detail_url = f"https://www.zhipin.com{candidate.url}"
@@ -387,6 +393,16 @@ class BossCollector:
                             continue
                         if not hooks.on_candidate(merged):
                             return PlatformCollectionResult(self.platform, "completed", "callback_stopped", "采集回调已停止")
+                    if page >= 2 and eligible_on_page == 0:
+                        empty_eligible_pages += 1
+                        if empty_eligible_pages >= empty_eligible_page_limit:
+                            hooks.on_event(
+                                phase="loading_list", keyword=keyword, city=city, page=page,
+                                message=f"BOSS {keyword} 连续 {empty_eligible_pages} 页没有合格新岗位，结束该关键词",
+                            )
+                            break
+                    else:
+                        empty_eligible_pages = 0
                     if page < request.max_pages and _wait_or_stop(hooks.stop_event, 0.2 * delay_multiplier, self.sleep):
                         return PlatformCollectionResult(self.platform, "stopped", "user_stopped", "用户已停止")
         finally:

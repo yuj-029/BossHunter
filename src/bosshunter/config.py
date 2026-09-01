@@ -86,8 +86,9 @@ DEFAULTS: dict[str, Any] = {
     "collection": {
         "default_order": ["boss"],
         "auto_score_default": False,
-        "daily_search_page_limit": 30,
+        "daily_search_page_limit": 80,
         "daily_detail_page_limit": 150,
+        "consecutive_empty_eligible_pages": 2,
         "max_consecutive_page_failures": 3,
         "risk_pause_min_minutes": 5,
         "risk_pause_max_minutes": 10,
